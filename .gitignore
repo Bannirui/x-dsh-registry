@@ -36,7 +36,8 @@ htmlcov/
 # ---------- 编辑器 / 系统 ----------
 .DS_Store
 .idea/
-.vscode/*
-!.vscode/tasks.json
-!.vscode/extensions.json
 *.swp
+
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json

@@ -22,10 +22,11 @@ cp .env.example .env
 客户端调用
 
 ```sh
-POST /x/requirements
-  header: Authorization: Bearer <X_HARNESS_TOKEN>
-  body:   {"material": "用户必须能注册并登录；登录响应时间<500ms"}
-  -> 200 {"text": "<主Agent的最终答复>"}
+curl \
+  -X POST "http://127.0.0.1:8080/x/requirements" \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{"material":"this is test from http"}'
 ```
 
 ### 2.1 要点
@@ -56,5 +57,3 @@ config:
 - 2 删除就直接删文件，`registry.py`会自动扫描，无需改注册代码。
 - 3 在`harness/cordis.patch.yml`的`agents:`列表里加/删名字（外部服务可单独给`baseUrl`）
 - 4 若要进入流水线，把它加/删进`cordis.patch.yml`的`pipeline:`列表即可
-
-> 子智能体服务端为 FastAPI + uvicorn，模型调用走官方 `openai` SDK；无凭据时不再离线兜底，`DEEPSEEK_API_KEY` 缺失会导致服务启动失败。详见 `agents/README.md`。

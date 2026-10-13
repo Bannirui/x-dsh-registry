@@ -1,0 +1,48 @@
+{
+  // ================= Python（agents/，FastAPI + openai） =================
+  "python.defaultInterpreterPath": "${workspaceFolder}/agents/.venv/bin/python",
+  "python.analysis.extraPaths": ["${workspaceFolder}/agents"],
+  "python.analysis.typeCheckingMode": "basic",
+  "python.terminal.activateEnvironment": true,
+
+  // ================= TypeScript（harness/） =================
+  "typescript.tsdk": "harness/node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+  "typescript.preferences.importModuleSpecifierEnding": "js",
+
+  // ================= 编辑/格式化 =================
+  "editor.formatOnSave": false,
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    }
+  },
+  "[typescript]": {
+    "editor.defaultFormatter": "vscode.typescript-language-features",
+    "editor.formatOnSave": true
+  },
+  "[json]": {
+    "editor.defaultFormatter": "vscode.json-language-features"
+  },
+
+  // ================= 隐藏/忽略构建产物 =================
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.py[cod]": true,
+    "agents/.venv": true,
+    "harness/lib": true,
+    "harness/*.tsbuildinfo": true
+  },
+  "search.exclude": {
+    "agents/.venv": true,
+    "harness/node_modules": true,
+    "harness/lib": true
+  },
+  "files.watcherExclude": {
+    "**/.venv/**": true,
+    "**/node_modules/**": true,
+    "**/dsh-home/**": true
+  }
+}
