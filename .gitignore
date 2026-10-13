@@ -1,0 +1,42 @@
+# ---------- Node / TypeScript ----------
+node_modules/
+lib/
+dist/
+build/
+*.tsbuildinfo
+.npm/
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ---------- 本地配置与运行数据（含密钥 / 会话日志）----------
+.env
+.env.*
+!.env.example
+.dsh-home/
+.dsh-demo-home/
+*.log
+
+# ---------- 编辑器 / 系统 ----------
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/tasks.json
+!.vscode/extensions.json
+*.swp

@@ -1,0 +1,58 @@
+{
+  "name": "x-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib", "cordis.patch.yml", "README.md"],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify": "node scripts/verify.mjs"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh": "0.2.0-rc.2",
+    "@types/node": "^22",
+    "typescript": "^5.9.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/schemastery": "^3.18.4",
+    "@deepseek-ai/dsh-agent": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-agent-default-model": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-fs": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-host-webserver": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-session": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-subagent": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-util-values": "^0.2.0-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": { "optional": true },
+    "@deepseek-ai/schemastery": { "optional": true },
+    "@deepseek-ai/dsh-agent": { "optional": true },
+    "@deepseek-ai/dsh-agent-default-model": { "optional": true },
+    "@deepseek-ai/dsh-fs": { "optional": true },
+    "@deepseek-ai/dsh-host-webserver": { "optional": true },
+    "@deepseek-ai/dsh-llm": { "optional": true },
+    "@deepseek-ai/dsh-session": { "optional": true },
+    "@deepseek-ai/dsh-subagent": { "optional": true },
+    "@deepseek-ai/dsh-tools": { "optional": true },
+    "@deepseek-ai/dsh-util-values": { "optional": true }
+  }
+}
