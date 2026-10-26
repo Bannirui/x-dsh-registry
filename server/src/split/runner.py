@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -13,6 +14,12 @@ from .assets import follow_assets
 from .outline import parse_outline
 
 SCRIPTS_DIR = Path(__file__).resolve().parent / "scripts"
+
+FINAL_IMAGE_MD = re.compile(r"(!\[[^\]]*\]\()([^)\s]+)((?:\s+[\"'][^\"']*[\"'])?\))")
+FINAL_IMAGE_HTML = re.compile(r"(<img[^>]*\bsrc=[\"'])([^\"']+)([\"'])", re.IGNORECASE)
+FINAL_HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+FINAL_SECTION_ID = re.compile(r"^(\d+(?:\.\d+)*)[\s._、-]*(.*)$")
+EXTERNAL_REF_PREFIXES = ("http://", "https://", "data:", "//", "#")
 
 
 class SplitRunError(RuntimeError):
@@ -175,33 +182,17 @@ def _write_final_markdown(
     chunks: list[dict],
     source_name: str,
 ) -> Path:
-    headings = parse_outline(markdown_path.read_text(encoding="utf-8"))
-    order = {heading.section_id: index for index, heading in enumerate(headings)}
-
-    def position(chunk: dict) -> tuple[int, str]:
-        values = [
-            order.get(str(section.get("section_id")))
-            for section in chunk.get("source_sections", [])
-            if isinstance(section, dict) and section.get("section_id")
-        ]
-        available = [value for value in values if value is not None]
-        return (min(available) if available else len(order), str(chunk.get("chunk_id") or ""))
+    content = _rewrite_local_asset_refs(
+        markdown_path.read_text(encoding="utf-8"),
+        source_dir=markdown_path.parent,
+        target_dir=requirements_dir,
+    )
+    content = _annotate_semantic_merges(content, chunks)
+    content = _collapse_merged_sections(content, chunks).strip()
 
     title = Path(source_name).stem or "需求文档"
     parts = [f"# {title}", ""]
-    for chunk in sorted(chunks, key=position):
-        relative = str(chunk.get("source_relative_path") or "")
-        if not relative:
-            continue
-        md_path = requirements_dir / relative
-        if not md_path.is_file():
-            continue
-        content = md_path.read_text(encoding="utf-8").strip()
-        if not content:
-            continue
-        prefix = Path(relative).parent.as_posix()
-        if prefix and prefix != ".":
-            content = _prefix_asset_refs(content, prefix)
+    if content:
         parts.append(content)
         parts.append("")
 
@@ -210,19 +201,174 @@ def _write_final_markdown(
     return final_path
 
 
-def _prefix_asset_refs(content: str, prefix: str) -> str:
-    content = re.sub(
-        r"(!\[[^\]]*\]\()(\./)?assets/",
-        lambda match: f"{match.group(1)}{prefix}/assets/",
-        content,
-    )
-    content = re.sub(
-        r"(<img[^>]*\bsrc=[\"'])(\./)?assets/",
-        lambda match: f"{match.group(1)}{prefix}/assets/",
-        content,
-        flags=re.IGNORECASE,
-    )
-    return content
+def _annotate_semantic_merges(content: str, chunks: list[dict]) -> str:
+    merges = _merge_annotations(chunks)
+    if not merges:
+        return content
+
+    lines: list[str] = []
+    annotated: set[str] = set()
+    in_fence = False
+    for line in content.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            lines.append(line)
+            continue
+        lines.append(line)
+        if in_fence:
+            continue
+        match = FINAL_HEADING.match(line)
+        if match is None:
+            continue
+        parsed = FINAL_SECTION_ID.match(match.group(2).strip())
+        if parsed is None:
+            continue
+        section_id = parsed.group(1)
+        entry = merges.get(section_id)
+        if entry is None or entry["role"] != "primary" or section_id in annotated:
+            continue
+        annotated.add(section_id)
+        references = "、".join(
+            f"{item['section_id']} {item.get('title', '')}".strip()
+            for item in entry["merged"]
+        )
+        note = f"语义合并：本需求合并了 {references}。"
+        if entry["reason"]:
+            note += f"合并原因：{entry['reason'].rstrip('。.!！;；')}。"
+        lines.extend(["", f"> {note}", ""])
+    return "\n".join(lines)
+
+
+def _merge_annotations(chunks: list[dict]) -> dict[str, dict]:
+    annotations: dict[str, dict] = {}
+    for chunk in chunks:
+        if not isinstance(chunk, dict) or chunk.get("chunk_type") != "functional_requirement":
+            continue
+        sections = [
+            section
+            for section in (chunk.get("source_sections") or [])
+            if isinstance(section, dict) and section.get("section_id")
+        ]
+        if len(sections) < 2:
+            continue
+        sections.sort(key=lambda section: 0 if section.get("role") == "primary" else 1)
+        primary = sections[0]
+        merged = sections[1:]
+        canonical = str(
+            chunk.get("canonical_function_name") or chunk.get("title") or primary.get("title") or ""
+        ).strip()
+        reason = str(chunk.get("merge_reason") or "").strip()
+        for index, section in enumerate(sections):
+            annotations[str(section["section_id"])] = {
+                "role": "primary" if index == 0 else "merged",
+                "canonical": canonical,
+                "primary": primary,
+                "merged": merged,
+                "reason": reason,
+            }
+    return annotations
+
+
+def _collapse_merged_sections(content: str, chunks: list[dict]) -> str:
+    annotations = _merge_annotations(chunks)
+    if not annotations:
+        return content
+
+    headings = parse_outline(content)
+    by_id = {heading.section_id: heading for heading in headings if heading.section_id}
+    merged_ids = {
+        section_id
+        for section_id, entry in annotations.items()
+        if entry["role"] == "merged" and section_id in by_id
+    }
+    if not merged_ids:
+        return content
+
+    candidates = sorted((by_id[section_id] for section_id in merged_ids), key=lambda item: item.start)
+    selected: list = []
+    for heading in candidates:
+        if any(heading.start >= top.start and heading.start < top.subtree_end for top in selected):
+            continue
+        selected.append(heading)
+    selected_ids = {heading.section_id for heading in selected}
+
+    insertions: dict[str, list[str]] = {}
+    for heading in selected:
+        primary_id = str(annotations[heading.section_id]["primary"]["section_id"])
+        block = content[heading.start : heading.subtree_end].strip()
+        lines = block.splitlines()
+        body = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+        if body:
+            insertions.setdefault(primary_id, []).append(body)
+
+    parts: list[str] = []
+    cursor = 0
+    for heading in headings:
+        if heading.start < cursor:
+            continue
+        parts.append(content[cursor : heading.start])
+        if heading.section_id in selected_ids:
+            cursor = heading.subtree_end
+            continue
+        parts.append(content[heading.start : heading.end])
+        cursor = heading.end
+        for body in insertions.get(heading.section_id, []):
+            separator = "" if parts[-1].endswith("\n\n") else ("\n" if parts[-1].endswith("\n") else "\n\n")
+            parts.append(f"{separator}{body}\n\n")
+    parts.append(content[cursor:])
+    collapsed = "".join(parts)
+    return _drop_empty_merge_parents(collapsed, headings, selected)
+
+
+def _drop_empty_merge_parents(content: str, original_headings: list, merged_headings: list) -> str:
+    ancestors = {
+        other.section_id
+        for heading in merged_headings
+        for other in original_headings
+        if other.level < heading.level and other.start < heading.start < other.subtree_end
+    }
+    if not ancestors:
+        return content
+
+    while True:
+        headings = parse_outline(content)
+        target = None
+        for heading in headings:
+            if heading.section_id not in ancestors:
+                continue
+            body = "\n".join(heading.own_text.splitlines()[1:]).strip()
+            has_descendant = any(
+                heading.start < other.start < heading.subtree_end for other in headings
+            )
+            if not body and not has_descendant:
+                target = heading
+                break
+        if target is None:
+            return content
+        content = content[: target.start] + content[target.end :]
+
+
+def _rewrite_local_asset_refs(content: str, *, source_dir: Path, target_dir: Path) -> str:
+    def replace(match: re.Match[str]) -> str:
+        reference = match.group(2)
+        rewritten = _relative_to_target(reference, source_dir, target_dir)
+        return f"{match.group(1)}{rewritten}{match.group(3)}"
+
+    content = FINAL_IMAGE_MD.sub(replace, content)
+    return FINAL_IMAGE_HTML.sub(replace, content)
+
+
+def _relative_to_target(reference: str, source_dir: Path, target_dir: Path) -> str:
+    if not reference or reference.startswith(EXTERNAL_REF_PREFIXES):
+        return reference
+    candidate = Path(reference)
+    resolved = candidate if candidate.is_absolute() else source_dir / candidate
+    try:
+        relative = os.path.relpath(resolved, target_dir)
+    except ValueError:
+        return reference
+    return relative.replace(os.sep, "/")
 
 
 def _run_script(
