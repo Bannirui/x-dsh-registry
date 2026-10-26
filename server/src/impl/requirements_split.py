@@ -113,6 +113,8 @@ def _convert_sync(payload: dict) -> dict:
     assets = manifest.get("assets") or []
     warnings = manifest.get("warnings") or []
     ocr_pages = manifest.get("ocr_pages") or []
+    ocr_completed = sum(1 for item in ocr_pages if item.get("status") == "completed")
+    ocr_failed = sum(1 for item in ocr_pages if item.get("status") in {"failed", "pending", "skipped"})
 
     message = (
         f"已转换 {manifest['source']['name']}："
@@ -120,8 +122,10 @@ def _convert_sync(payload: dict) -> dict:
         f"{len(sections)} 个章节，{len(assets)} 张图片。"
         f"输出目录：{task_dir}"
     )
-    if ocr_pages:
-        message += f" 有 {len(ocr_pages)} 页需要 OCR。"
+    if ocr_completed:
+        message += f" 已完成 {ocr_completed} 页 OCR。"
+    if ocr_failed:
+        message += f" 有 {ocr_failed} 页 OCR 未完成。"
     if warnings:
         message += f" 有 {len(warnings)} 条告警，详见 convert_manifest.json。"
 
@@ -136,6 +140,8 @@ def _convert_sync(payload: dict) -> dict:
         "sectionCount": len(sections),
         "assetCount": len(assets),
         "ocrPageCount": len(ocr_pages),
+        "ocrCompletedCount": ocr_completed,
+        "ocrFailedCount": ocr_failed,
         "warningCount": len(warnings),
         "ocrPages": ocr_pages,
         "warnings": warnings,
@@ -217,6 +223,7 @@ async def _semantic_split(conversion: dict) -> dict:
         "splitStatus": "completed",
         "treeDir": result["treeDir"],
         "chunksPath": result["chunksPath"],
+        "reportPath": result["reportPath"],
         "normalizedMarkdownPath": str(prepared["normalizedPath"]),
         "requirementCount": result["requirementCount"],
         "chunkCount": result["chunkCount"],
@@ -239,6 +246,7 @@ class RequirementsSplitAgent(XAgent):
                     "splitStatus": "skipped",
                     "treeDir": "",
                     "chunksPath": "",
+                    "reportPath": "",
                     "normalizedMarkdownPath": "",
                     "requirementCount": 0,
                     "chunkCount": 0,
@@ -263,6 +271,7 @@ class RequirementsSplitAgent(XAgent):
                 "splitError": f"{type(exc).__name__}: {exc}",
                 "treeDir": "",
                 "chunksPath": "",
+                "reportPath": "",
                 "normalizedMarkdownPath": "",
                 "requirementCount": 0,
                 "chunkCount": 0,

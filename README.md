@@ -60,6 +60,7 @@ http://127.0.0.1:8080/
     ├── chunks.json             # 语义分块结果
     ├── split_report.json       # 拆分与校验报告
     ├── assets_report.json      # 图片跟随/悬空引用报告
+    ├── report.json             # 最终汇总（需求/合并/图片/OCR/告警）
     ├── requirement_relations.json
     └── <功能目录>/
         ├── <功能>.md           # 条目化需求
@@ -67,3 +68,5 @@ http://127.0.0.1:8080/
 ```
 
 拆分后 Markdown 中的图片引用会重写为需求目录内的相对路径，例如 `assets/img_001.png`。
+
+图片型 PDF 默认使用本地 RapidOCR，在 Markdown 中写入 `<!-- OCR page N provider=... -->` 标记，并在 `convert_manifest.json` 的 `ocr_pages` 中记录识别状态。可通过 `XAGENTS_OCR_PROVIDER=vision` 切换到 OpenAI 兼容的视觉模型。

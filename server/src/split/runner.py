@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .assets import follow_assets
@@ -108,9 +109,42 @@ def run_pipeline(
     functional_count = sum(
         1 for chunk in organized_chunks.get("chunks", []) if chunk.get("chunk_type") == "functional_requirement"
     )
+    source = manifest.get("source", {}) if isinstance(manifest, dict) else {}
+    ocr_pages = manifest.get("ocr_pages", []) if isinstance(manifest, dict) else []
+    ocr_completed = sum(1 for item in ocr_pages if item.get("status") == "completed")
+    ocr_failed = sum(1 for item in ocr_pages if item.get("status") in {"failed", "pending", "skipped"})
+    conversion_warnings = manifest.get("warnings", []) if isinstance(manifest, dict) else []
+    all_warnings = conversion_warnings + validation_warnings + asset_result["assetWarnings"]
+    final_report = {
+        "task_id": manifest.get("task_id") if isinstance(manifest, dict) else task_dir.name,
+        "source": source,
+        "requirement_count": functional_count,
+        "chunk_count": len(organized_chunks.get("chunks", [])),
+        "merge_count": (organized_chunks.get("chunking_summary") or {}).get("merge_count", 0),
+        "merge_records": organized_chunks.get("merge_records", []),
+        "image_count": len(manifest.get("assets", [])) if isinstance(manifest, dict) else 0,
+        "copied_image_count": asset_result["copiedAssetCount"],
+        "unmapped_image_count": asset_result["unmappedAssetCount"],
+        "dangling_image_count": asset_result["danglingImageCount"],
+        "ocr_pages": ocr_pages,
+        "ocr_completed_count": ocr_completed,
+        "ocr_failed_count": ocr_failed,
+        "warnings": all_warnings,
+        "tree_dir": str(requirements_dir),
+        "chunks_path": str(chunks_path),
+        "asset_report_path": asset_result["assetReportPath"],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    report_path = requirements_dir / "report.json"
+    report_path.write_text(
+        json.dumps(final_report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
     return {
         "treeDir": str(requirements_dir),
         "chunksPath": str(chunks_path),
+        "reportPath": str(report_path),
         "requirementCount": functional_count,
         "chunkCount": len(organized_chunks.get("chunks", [])),
         "files": files,

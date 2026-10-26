@@ -8,9 +8,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ..config import get_settings
+from ..ocr import ocr_page
 from .base import ConversionError, ConversionResult, SectionTracker
 
-IMAGE_MD = re.compile(r"!\[[^\]]*\]\(([^)\s]+)")
+IMAGE_MD = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
 IMAGE_HTML = re.compile(r"<img[^>]*\bsrc=[\"']([^\"']+)[\"']", re.IGNORECASE)
 PAGE_SEPARATOR = re.compile(r"^---\s*end of page=\d+\s*---$", re.IGNORECASE)
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
@@ -53,67 +55,81 @@ def convert_pdf(source: Path, assets_dir: Path) -> ConversionResult:
     warnings: list[str] = []
     assets: list[dict] = []
     seen_assets: set[str] = set()
+    settings = get_settings()
+    ocr_used = 0
 
-    for index, page in enumerate(pages, start=1):
-        page_number = int((page.get("metadata") or {}).get("page") or index)
-        text = page.get("text") or ""
-        current_section = ""
-        rendered: list[str] = []
+    try:
+        import pymupdf
 
-        for line in text.splitlines():
-            if PAGE_SEPARATOR.match(line.strip()):
-                continue
-            heading = HEADING.match(line)
-            if heading:
-                heading_line, section = tracker.heading(
-                    len(heading.group(1)), heading.group(2), page=page_number
-                )
-                current_section = section["section_id"]
-                rendered.append(heading_line)
-                continue
-            numbered = NUMBERED_HEADING.match(line.strip())
-            if numbered and _looks_like_heading(numbered.group(2)):
-                heading_line, section = tracker.heading(
-                    len(numbered.group(1).split(".")), line.strip(), page=page_number
-                )
-                current_section = section["section_id"]
-                rendered.append(heading_line)
-                continue
+        document = pymupdf.open(str(source))
+    except Exception:
+        document = None
 
-            rewritten = line
-            for pattern in (IMAGE_MD, IMAGE_HTML):
-                for match in list(pattern.finditer(line)):
-                    reference = match.group(1)
-                    relative = _relative_asset(reference, assets_dir)
-                    if relative is None:
-                        warnings.append(f"第 {page_number} 页图片引用无法解析：{reference}")
-                        continue
-                    rewritten = rewritten.replace(reference, relative)
-                    if relative not in seen_assets:
-                        seen_assets.add(relative)
-                        assets.append(
-                            {
-                                "id": f"img_{len(assets) + 1:03d}",
-                                "path": relative,
-                                "source": reference,
-                                "section_id": current_section,
-                                "page": page_number,
-                                "markdown_ref": relative,
-                            }
-                        )
-            rendered.append(rewritten)
+    try:
+        for index, page in enumerate(pages, start=1):
+            page_number = int((page.get("metadata") or {}).get("page") or index)
+            original_text = page.get("text") or ""
+            text, ocr_note, ocr_used = _apply_ocr(
+                original_text,
+                page_number=page_number,
+                settings=settings,
+                document=document,
+                ocr_used=ocr_used,
+            )
+            if ocr_note:
+                ocr_pages.append(ocr_note["page_info"])
+                warnings.extend(ocr_note["warnings"])
 
-        plain_text = PAGE_SEPARATOR.sub("", text)
-        plain_text = IMAGE_MD.sub("", plain_text)
-        plain_text = IMAGE_HTML.sub("", plain_text)
-        plain_text = re.sub(r"<[^>]+>", "", plain_text)
-        plain = re.sub(r"\s+", "", plain_text)
-        if len(plain) < LOW_TEXT_CHARS:
-            reason = "文本层为空或过少"
-            ocr_pages.append({"page": page_number, "reason": reason})
-            warnings.append(f"第 {page_number} 页{reason}，当前仅完成文本层转换，后续需要 OCR/多模态识别")
+            current_section = ""
+            rendered: list[str] = []
 
-        chunks.append("\n".join(rendered).strip())
+            for line in text.splitlines():
+                if PAGE_SEPARATOR.match(line.strip()):
+                    continue
+                heading = HEADING.match(line)
+                if heading:
+                    heading_line, section = tracker.heading(
+                        len(heading.group(1)), heading.group(2), page=page_number
+                    )
+                    current_section = section["section_id"]
+                    rendered.append(heading_line)
+                    continue
+                numbered = NUMBERED_HEADING.match(line.strip())
+                if numbered and _looks_like_heading(numbered.group(2)):
+                    heading_line, section = tracker.heading(
+                        len(numbered.group(1).split(".")), line.strip(), page=page_number
+                    )
+                    current_section = section["section_id"]
+                    rendered.append(heading_line)
+                    continue
+
+                rewritten = line
+                for pattern in (IMAGE_MD, IMAGE_HTML):
+                    for match in list(pattern.finditer(line)):
+                        reference = match.group(1)
+                        relative = _relative_asset(reference, assets_dir)
+                        if relative is None:
+                            warnings.append(f"第 {page_number} 页图片引用无法解析：{reference}")
+                            continue
+                        rewritten = rewritten.replace(reference, relative)
+                        if relative not in seen_assets:
+                            seen_assets.add(relative)
+                            assets.append(
+                                {
+                                    "id": f"img_{len(assets) + 1:03d}",
+                                    "path": relative,
+                                    "source": reference,
+                                    "section_id": current_section,
+                                    "page": page_number,
+                                    "markdown_ref": relative,
+                                }
+                            )
+                rendered.append(rewritten)
+
+            chunks.append("\n".join(rendered).strip())
+    finally:
+        if document is not None:
+            document.close()
 
     markdown = "\n\n".join(chunk for chunk in chunks if chunk)
     if not markdown.strip():
@@ -127,6 +143,94 @@ def convert_pdf(source: Path, assets_dir: Path) -> ConversionResult:
         ocr_pages=ocr_pages,
         warnings=warnings,
     )
+
+
+def _apply_ocr(
+    original_text: str,
+    *,
+    page_number: int,
+    settings,
+    document,
+    ocr_used: int,
+) -> tuple[str, dict | None, int]:
+    plain = _plain_text(original_text)
+    if len(plain) >= LOW_TEXT_CHARS:
+        return original_text, None, ocr_used
+
+    info = {"page": page_number, "reason": "文本层为空或过少", "status": "pending"}
+    if not settings.ocr_enabled:
+        info["error"] = "OCR 未启用"
+        return original_text, {"page_info": info, "warnings": [f"第 {page_number} 页文本过少，OCR 未启用，已保留原始图片"]}, ocr_used
+    if settings.ocr_max_pages > 0 and ocr_used >= settings.ocr_max_pages:
+        info["status"] = "skipped"
+        info["error"] = f"超过单文档 OCR 页数上限 {settings.ocr_max_pages}"
+        return original_text, {"page_info": info, "warnings": [f"第 {page_number} 页跳过 OCR：{info['error']}"]}, ocr_used
+
+    image_bytes = _render_page(document, page_number, settings.ocr_dpi)
+    if not image_bytes:
+        info["status"] = "failed"
+        info["error"] = "页面渲染失败"
+        return original_text, {"page_info": info, "warnings": [f"第 {page_number} 页 OCR 失败：页面渲染失败"]}, ocr_used + 1
+
+    result = ocr_page(image_bytes, page=page_number)
+    info.update(
+        {
+            "status": "completed" if result.ok else "failed",
+            "provider": result.provider,
+            "model": result.model,
+            "chars": len(result.text),
+            "duration": round(result.duration, 3),
+            "confidence": round(result.confidence, 4) if result.confidence is not None else None,
+            "attempts": result.attempts,
+        }
+    )
+    if result.error:
+        info["error"] = result.error
+    if not result.ok:
+        return (
+            original_text,
+            {"page_info": info, "warnings": [f"第 {page_number} 页 OCR 失败：{result.error or '未识别到文字'}，已保留原始图片"]},
+            ocr_used + 1,
+        )
+
+    refs = _image_references(original_text)
+    marker = (
+        f"<!-- OCR page {page_number} provider={result.provider}"
+        f" model={result.model or '-'} -->"
+    )
+    text = marker + "\n\n" + result.text.strip()
+    if refs:
+        text = text + "\n\n" + "\n".join(refs)
+    return text, {"page_info": info, "warnings": []}, ocr_used + 1
+
+
+def _plain_text(text: str) -> str:
+    plain = PAGE_SEPARATOR.sub("", text)
+    plain = IMAGE_MD.sub("", plain)
+    plain = IMAGE_HTML.sub("", plain)
+    plain = re.sub(r"<[^>]+>", "", plain)
+    return re.sub(r"\s+", "", plain)
+
+
+def _image_references(text: str) -> list[str]:
+    refs: list[str] = []
+    for pattern in (IMAGE_MD, IMAGE_HTML):
+        for match in pattern.finditer(text):
+            value = match.group(0)
+            if value not in refs:
+                refs.append(value)
+    return refs
+
+
+def _render_page(document, page_number: int, dpi: int) -> bytes:
+    if document is None:
+        return b""
+    try:
+        page = document[page_number - 1]
+        pixmap = page.get_pixmap(dpi=max(72, dpi))
+        return pixmap.tobytes("png")
+    except Exception:
+        return b""
 
 
 def _looks_like_heading(title: str) -> bool:
