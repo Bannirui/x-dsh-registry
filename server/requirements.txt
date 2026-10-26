@@ -1,0 +1,16 @@
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.29,<1.0
+pydantic>=2.6,<3.0
+# [socks] 让模型客户端在需要时能走SOCKS代理（HTTP_PROXY/ALL_PROXY等标准环境变量）
+httpx[socks]>=0.27,<1.0
+openai>=1.30,<2.0
+
+# 文档转换
+pymupdf>=1.24,<3.0
+pymupdf4llm>=0.0.17
+python-docx>=1.1,<2.0
+openpyxl>=3.1,<4.0
+Pillow>=10.0
+
+# 本地 OCR（图片型 PDF）
+rapidocr-onnxruntime>=1.4,<2.0

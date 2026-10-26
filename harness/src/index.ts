@@ -1,16 +1,3 @@
-/**
- * 宿主插件
- *
- * 职责：
- *   1. 把配置里列出的每个HTTP子智能体注册成harness的一个subagent provider（每个可以有自己的 baseUrl，用于接不同的外部服务）
- *   2. 注册编排工具`requirements_pipeline`：按配置的pipeline顺序依次调用子智能体
- *   3. 注册通用调试工具`x_call_agent`：调用任意已注册子智能体
- *
- * 业务逻辑全部在Python侧（agents/），这里只做适配与编排
- *
- * @module x-harness
- */
-
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -19,9 +6,10 @@ import type { SubagentResult, SubagentRun } from '@deepseek-ai/dsh-subagent'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import { createHttpProvider } from './http-provider.js'
 import { registerHttpApi } from './http-api.js'
+import { installChatBridge } from './chat-bridge.js'
 
 export const name = 'x-requirements'
-export const inject = ['tools', 'subagents']
+export const inject = ['tools', 'subagents', 'llm']
 
 /** 一个子智能体端点：名字+可选的服务基址（不填则用顶层 baseUrl） */
 export interface AgentEndpoint {
@@ -42,24 +30,105 @@ export interface Config {
   taskPrefix?: string
   /** HTTP并发上限（同时运行的主Agent数）超出排队 默认4 <=0表示不限 */
   maxConcurrent?: number
+  /** Web聊天桥：把聊天输入转发给该Python子智能体，输出原样作为回复 */
+  chatAgent?: string
 }
 
 export const Config = z.object({
   baseUrl: z.string().default('http://127.0.0.1:8077'),
   agents: z.array(z.object({ name: z.string().required(), baseUrl: z.string() })),
-  pipeline: z.array(z.string()).default(['extraction', 'clarification', 'completion', 'echo']),
+  pipeline: z.array(z.string()).default(['requirements_split']),
   token: z.string(),
   taskPrefix: z.string(),
   maxConcurrent: z.natural().default(4),
+  chatAgent: z.string(),
 })
 
 const DEFAULT_AGENTS: AgentEndpoint[] = [
-  { name: 'extraction' },
-  { name: 'clarification' },
-  { name: 'completion' },
-  { name: 'echo', baseUrl: 'http://127.0.0.1:8090' },
+  { name: 'requirements_split' },
 ]
-const DEFAULT_PIPELINE = ['extraction', 'clarification', 'completion', 'echo']
+const DEFAULT_PIPELINE = ['requirements_split']
+
+function jsonObject(value: JsonValue): Record<string, JsonValue> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, JsonValue>
+    : {}
+}
+
+function stringField(value: Record<string, JsonValue>, key: string): string {
+  const field = value[key]
+  return typeof field === 'string' ? field : ''
+}
+
+function numberField(value: Record<string, JsonValue>, key: string): number {
+  const field = value[key]
+  return typeof field === 'number' ? field : 0
+}
+
+class TaskApiUnavailable extends Error {}
+
+interface TaskSnapshot {
+  taskId: string
+  status: string
+  progress: number
+  stage: string
+  message: string
+  result?: unknown
+  diagnostic?: string | null
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function submitTask(
+  baseUrl: string,
+  agentName: string,
+  input: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<string> {
+  const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/tasks/${encodeURIComponent(agentName)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ input }),
+    signal,
+  })
+  if (response.status === 404 || response.status === 405) {
+    throw new TaskApiUnavailable(`后端未提供 /tasks 接口（HTTP ${response.status}）`)
+  }
+  if (!response.ok) {
+    throw new Error(`创建拆分任务失败：HTTP ${response.status}`)
+  }
+  const body = await response.json() as { taskId?: unknown }
+  if (typeof body.taskId !== 'string' || body.taskId === '') {
+    throw new Error('创建拆分任务失败：后端未返回 taskId')
+  }
+  return body.taskId
+}
+
+async function pollTask(
+  baseUrl: string,
+  taskId: string,
+  signal: AbortSignal,
+  onProgress?: (snapshot: TaskSnapshot) => void,
+): Promise<JsonValue> {
+  const endpoint = `${baseUrl.replace(/\/+$/, '')}/tasks/${encodeURIComponent(taskId)}`
+  const deadline = Date.now() + 30 * 60 * 1000
+  while (true) {
+    if (Date.now() > deadline) throw new Error('拆分任务超过 30 分钟仍未完成')
+    const response = await fetch(endpoint, { signal })
+    if (!response.ok) throw new Error(`查询拆分任务失败：HTTP ${response.status}`)
+    const snapshot = await response.json() as TaskSnapshot
+    onProgress?.(snapshot)
+    if (snapshot.status === 'completed') {
+      return (snapshot.result ?? null) as JsonValue
+    }
+    if (snapshot.status === 'failed') {
+      throw new Error(snapshot.diagnostic || snapshot.message || '拆分任务失败')
+    }
+    await delay(1000)
+  }
+}
 
 /** 把子代理结果的文本块还原成JSON */
 function resultJson(result: SubagentResult, label: string): JsonValue {
@@ -143,10 +212,11 @@ export function apply(ctx: Context, config: Config): void {
           const names = stages
             .map((stage) => (stage && typeof stage === 'object' && 'agent' in stage ? String((stage as { agent: unknown }).agent) : '?'))
             .join(' -> ')
-          const items = value.final && typeof value.final === 'object' && 'items' in value.final
-            ? (value.final as { items?: unknown[] }).items
-            : undefined
-          const count = Array.isArray(items) ? items.length : 0
+          const final = value.final && typeof value.final === 'object'
+            ? value.final as Record<string, unknown>
+            : {}
+          const items = Array.isArray(final.items) ? final.items : []
+          const count = typeof final.requirementCount === 'number' ? final.requirementCount : items.length
           return [{ type: 'text', text: `需求流水线完成(${names})：最终${count}条需求。` }]
         },
       },
@@ -207,10 +277,141 @@ export function apply(ctx: Context, config: Config): void {
     }),
   )
 
+  // ---- 文档接入工具：PDF/Word/Excel -> Markdown ----
+  ctx.tools.register(
+    defineTool({
+      name: 'split_requirement_document',
+      description:
+        '把工作区里的 PDF / Word / Excel 需求文档转换为 Markdown，'
+        + '按功能语义拆分 chunk，并组织成“一需求一 Markdown 文件”的目录树。'
+        + '同时输出 convert_manifest.json、chunks.json 和 split_report.json。'
+        + 'path 必须是调用方通过 fs 工具确认存在的文件绝对路径。',
+      parameters: {
+        path: {
+          type: 'string',
+          required: true,
+          description: '需求文档的绝对路径，支持 .pdf / .docx / .xlsx / .xlsm。',
+        },
+        outputDir: {
+          type: 'string',
+          description: '可选输出根目录；每次任务仍会创建独立子目录，不覆盖已有文件。',
+        },
+        title: {
+          type: 'string',
+          description: '可选项目名/标题，用于输出目录命名。',
+        },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            kind: { type: 'string', required: true, const: 'requirements-split-document' },
+            jobId: { type: 'string', required: true },
+            taskId: { type: 'string', required: true },
+            outputDir: { type: 'string', required: true },
+            markdownPath: { type: 'string', required: true },
+            manifestPath: { type: 'string', required: true },
+            format: { type: 'string', required: true },
+            sectionCount: { type: 'integer', required: true },
+            assetCount: { type: 'integer', required: true },
+            ocrPageCount: { type: 'integer', required: true },
+            ocrCompletedCount: { type: 'integer', required: true },
+            ocrFailedCount: { type: 'integer', required: true },
+            warningCount: { type: 'integer', required: true },
+            splitStatus: { type: 'string', required: true },
+            treeDir: { type: 'string', required: true },
+            chunksPath: { type: 'string', required: true },
+            reportPath: { type: 'string', required: true },
+            finalPath: { type: 'string', required: true },
+            normalizedMarkdownPath: { type: 'string', required: true },
+            requirementCount: { type: 'integer', required: true },
+            chunkCount: { type: 'integer', required: true },
+            splitWarningCount: { type: 'integer', required: true },
+            copiedAssetCount: { type: 'integer', required: true },
+            unmappedAssetCount: { type: 'integer', required: true },
+            danglingImageCount: { type: 'integer', required: true },
+            assetReportPath: { type: 'string', required: true },
+            splitError: { type: 'string', required: true },
+            message: { type: 'string', required: true },
+          },
+        },
+        render: (_args, value) => [{ type: 'text', text: value.message }],
+      },
+      async execute(args, exec) {
+        const parent = exec.agent
+        if (!parent) throw new Error('split_requirement_document 需要调用方Agent（exec.agent为空）')
+        if (!ctx.subagents.getProvider('requirements_split')) {
+          throw new Error('未注册的子智能体: requirements_split，请检查插件 agents 配置')
+        }
+        const baseUrl = agents.find((item) => item.name === 'requirements_split')?.baseUrl?.trim() || defaultBaseUrl
+        const input = { path: args.path, output_dir: args.outputDir, title: args.title }
+        let jobId = ''
+        let output: JsonValue
+        try {
+          jobId = await submitTask(baseUrl, 'requirements_split', input, exec.signal)
+          let lastLogged = -1
+          let lastStage = ''
+          output = await pollTask(baseUrl, jobId, exec.signal, (snapshot) => {
+            if (snapshot.progress >= lastLogged + 10 || snapshot.stage !== lastStage) {
+              lastLogged = snapshot.progress
+              lastStage = snapshot.stage
+              ctx.logger.info(
+                `x-dsh: 拆分任务 ${jobId} ${snapshot.progress}% ${snapshot.stage}`
+                + (snapshot.message ? ` - ${snapshot.message}` : ''),
+              )
+            }
+          })
+        } catch (error) {
+          if (!(error instanceof TaskApiUnavailable)) throw error
+          ctx.logger.warn(`x-dsh: ${String(error)}，回退到同步调用`)
+          output = await callAgent('requirements_split', input, parent, exec.signal)
+        }
+        const data = jsonObject(output)
+        return {
+          kind: 'requirements-split-document' as const,
+          jobId,
+          taskId: stringField(data, 'taskId'),
+          outputDir: stringField(data, 'outputDir'),
+          markdownPath: stringField(data, 'markdownPath'),
+          manifestPath: stringField(data, 'manifestPath'),
+          format: stringField(data, 'format'),
+          sectionCount: numberField(data, 'sectionCount'),
+          assetCount: numberField(data, 'assetCount'),
+          ocrPageCount: numberField(data, 'ocrPageCount'),
+          ocrCompletedCount: numberField(data, 'ocrCompletedCount'),
+          ocrFailedCount: numberField(data, 'ocrFailedCount'),
+          warningCount: numberField(data, 'warningCount'),
+          splitStatus: stringField(data, 'splitStatus'),
+          treeDir: stringField(data, 'treeDir'),
+          chunksPath: stringField(data, 'chunksPath'),
+          reportPath: stringField(data, 'reportPath'),
+          finalPath: stringField(data, 'finalPath'),
+          normalizedMarkdownPath: stringField(data, 'normalizedMarkdownPath'),
+          requirementCount: numberField(data, 'requirementCount'),
+          chunkCount: numberField(data, 'chunkCount'),
+          splitWarningCount: numberField(data, 'splitWarningCount'),
+          copiedAssetCount: numberField(data, 'copiedAssetCount'),
+          unmappedAssetCount: numberField(data, 'unmappedAssetCount'),
+          danglingImageCount: numberField(data, 'danglingImageCount'),
+          assetReportPath: stringField(data, 'assetReportPath'),
+          splitError: stringField(data, 'splitError'),
+          message: stringField(data, 'message'),
+        }
+      },
+    }),
+  )
+
   ctx.logger.info(
     `${name}: ${agents.length} providers (${agents.map((a) => a.name).join(', ')}); `
     + `pipeline=${pipeline.join(' -> ')}`,
   )
+
+  const chatAgent = config.chatAgent?.trim()
+  if (chatAgent) {
+    installChatBridge(ctx, defaultBaseUrl, chatAgent)
+    ctx.logger.info(`${name}: Web聊天输入转发到 Python 子智能体 ${chatAgent}`)
+  }
 
   // 在带web服务器的profile里 把主Agent暴露成HTTP接口
   registerHttpApi(ctx, {

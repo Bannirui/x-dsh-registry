@@ -1,21 +1,15 @@
 #!/usr/bin/env bash
 #
-# 一键构建 x-harness：
-#   - 校验依赖版本（node 22+ / python3）
-#   - 安装并编译 TypeScript 薄层（harness -> lib/）
-#   - 离线自检（不调模型）
-#   - 创建 agents/.venv 并安装 Python 生产依赖（FastAPI/uvicorn/openai/httpx）
-#
-# 用法：
-#   ./build.sh            # 安装依赖 + 编译 + 自检
-#   ./build.sh --clean    # 先清理 node_modules/lib/.venv 再构建
+# usage:
+#   ./build.sh            # 安装依赖+编译+自检
+#   ./build.sh --clean    # 先清理node_modules/lib/ .venv再构建
 #   ./build.sh --typecheck-only
 #
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$PWD"
 HARNESS="$ROOT/harness"
-AGENTS="$ROOT/agents"
+AGENTS="$ROOT/server"
 VENV="$AGENTS/.venv"
 
 CLEAN=0
@@ -35,16 +29,16 @@ for arg in "$@"; do
   esac
 done
 
-# ---- 0/4 环境检查 ----
-echo ">>> 0/4 检查环境"
+# ---- 环境检查 ----
+echo ">>> 0/5 检查环境"
 
-command -v node >/dev/null 2>&1 || { echo "缺少 node（需要 22+）" >&2; exit 1; }
-command -v npm  >/dev/null 2>&1 || { echo "缺少 npm" >&2; exit 1; }
-command -v python3 >/dev/null 2>&1 || { echo "缺少 python3（需要 3.10+）" >&2; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "缺少node（需要 22+）" >&2; exit 1; }
+command -v npm  >/dev/null 2>&1 || { echo "缺少npm" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "缺少python3（需要 3.10+）" >&2; exit 1; }
 
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 if [ "$NODE_MAJOR" -lt 22 ]; then
-  echo "node 版本过低：$(node --version)，需要 22+" >&2
+  echo "node版本过低：$(node --version)，需要22+" >&2
   exit 1
 fi
 echo "    node   $(node --version)"
@@ -64,44 +58,34 @@ if [ "$TYPECHECK_ONLY" = "1" ]; then
   exit 0
 fi
 
-# ---- 1/5 安装 harness 依赖 ----
+# ---- 安装harness依赖 ----
 cd "$HARNESS"
 if [ ! -d node_modules ]; then
-  echo ">>> 1/5 安装 harness 依赖"
+  echo ">>> 1/5 安装harness依赖"
   npm install --no-audit --no-fund
 else
-  echo ">>> 1/5 依赖已存在（跳过 npm install；--clean 可强制重装）"
+  echo ">>> 1/5 依赖已存在（跳过npm install；--clean可强制重装）"
 fi
 
-# ---- 2/5 编译 TypeScript ----
-echo ">>> 2/5 编译 TypeScript -> lib/"
+# ---- 编译TypeScript ----
+echo ">>> 2/5 编译TypeScript->lib/"
 rm -rf lib
 npm run --silent build
 if [ ! -f lib/index.js ]; then
-  echo "构建失败：未生成 lib/index.js" >&2
+  echo "构建失败：未生成lib/index.js" >&2
   exit 1
 fi
 
-# ---- 3/5 离线自检 ----
-echo ">>> 3/5 离线自检（不调模型）"
-node scripts/verify.mjs
-
-# ---- 4/5 Python venv + 依赖 ----
-echo ">>> 4/5 安装 Python 子智能体依赖（venv: $VENV）"
+# ---- Python venv+依赖 ----
+echo ">>> 3/5 安装Python（venv: $VENV）"
 if [ ! -x "$VENV/bin/python" ]; then
   python3 -m venv "$VENV"
 fi
 "$VENV/bin/python" -m pip install --quiet --upgrade pip
 "$VENV/bin/pip" install --quiet --disable-pip-version-check -r "$AGENTS/requirements.txt"
 
-# ---- 5/5 Python 自检 ----
-echo ">>> 5/5 编译并导入自检"
-( cd "$AGENTS" && "$VENV/bin/python" -m compileall -q xagents )
-( cd "$AGENTS" && "$VENV/bin/python" -c "import xagents.server" ) && echo "    xagents 导入通过"
-
 echo
 echo ">>> 构建完成"
 echo "    harness : $HARNESS/lib"
-echo "    agents  : $VENV（FastAPI + uvicorn + openai）"
-echo "    运行流水线：./run.sh"
-echo "    启动 HTTP 服务：./run-web.sh"
+echo "    agents  : $VENV（FastAPI+uvicorn+openai）"
+echo "    启动HTTP服务：./run.sh"

@@ -1,59 +1,86 @@
-x-harness
+x-dsh
 ---
 
-## 1 REQUIREMENTS
+## 1 QUICK START
 
-- node 22+
-- python 3.10+（`build.sh` 会自动创建 `agents/.venv` 并安装 FastAPI/uvicorn/openai 等生产依赖）
-- [deepseek api key](https://platform.deepseek.com/api_keys)
-
-## 2 QUICK START
-
-启动服务端
+### 1.1 编译
 
 ```sh
 ./build.sh
-
-# 填写DEEPSEEK_API_KEY and X_HARNESS_TOKEN
-cp .env.example .env
-./run-web.sh
 ```
 
-客户端调用
+### 1.2 配置文件
 
 ```sh
-curl \
-  -X POST "http://127.0.0.1:8080/x/requirements" \
+cp .env.example .env
+```
+
+> 填写或修改对应配置项目 尤其`DEEPSEEK_API_KEY`和`X_HARNESS_TOKEN`
+
+### 1.3 启动
+
+```sh
+./run.sh
+```
+
+### 1.4 交互
+
+默认会自动拉起本地服务或者手动访问本地浏览器
+
+```sh
+http://127.0.0.1:8080/
+```
+
+## 2 SAMPLES
+
+### 2.1 设置工作区
+
+![](./doc/img/1792993791.png)
+
+### 2.2 web会话输入
+
+- 显式指定输出路径 `调用split_requirement_document工具转换02-跨章节合并.docx outputDir设为output`
+
+- 使用默认输出路径 `调用split_requirement_document工具转换02-跨章节合并.docx`
+
+![](./doc/img/1792994052.png)
+
+### 2.3 输出结构
+
+每次任务创建独立目录，不会覆盖已有结果：
+
+```text
+<outputRoot>/<文档名>-<时间戳>/
+├── document.md                 # 转换后的 Markdown(中间产物)
+├── document.normalized.md      # 统一章节编号后的 Markdown(中间产物)
+├── convert_manifest.json       # 图片、待 OCR 页、告警
+├── source/                     # 源文件副本
+├── assets/                     # 抽取出的原始图片
+└── requirements/
+    ├── chunks.json             # 语义分块结果
+    ├── split_report.json       # 拆分与校验报告
+    ├── assets_report.json      # 图片跟随/悬空引用报告
+    ├── report.json             # 最终汇总（需求/合并/图片/OCR/告警）
+    ├── final.md                # 按文档顺序拼接的完整 Markdown（导出/阅读用）
+    ├── requirement_relations.json
+    └── <功能目录>/
+        ├── <功能>.md           # 条目化需求
+        └── assets/             # 跟随该需求的图片
+```
+
+拆分后 Markdown 中的图片引用会重写为需求目录内的相对路径，例如 `assets/img_001.png`。
+
+图片型 PDF 默认使用本地 RapidOCR，在 Markdown 中写入 `<!-- OCR page N provider=... -->` 标记，并在 `convert_manifest.json` 的 `ocr_pages` 中记录识别状态。可通过 `XAGENTS_OCR_PROVIDER=vision` 切换到 OpenAI 兼容的视觉模型。
+## 3 长任务接口
+
+拆分任务也可以用异步接口提交，避免大文件长时间占用单个 HTTP 请求：
+
+```sh
+curl -s -X POST http://127.0.0.1:8077/tasks/requirements_split \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
-  -d '{"material":"this is test from http"}'
+  -d '{"input":{"path":"/absolute/path/需求文档.pdf","output_dir":"/tmp/outputs"}}'
+
+curl -s http://127.0.0.1:8077/tasks/<taskId>
 ```
 
-### 2.1 要点
-
-- 本版harness只允许绑定`127.0.0.1`，直接`--host 0.0.0.0`会被安全策略拒绝返回"intentionally not supported"，要让外部调用就保持 `WEB_HOST=127.0.0.1`，在前面加反向代理/隧道
-  - nginx：`location / { proxy_pass http://127.0.0.1:8080; }`（并在 nginx 层做 TLS + 鉴权）
-  - caddy：`reverse_proxy 127.0.0.1:8080`
-  - 临时：`ssh -L 8080:127.0.0.1:8080 user@host`
-- 无论是否走代理，务必设置`X_HARNESS_TOKEN`，否则接口无鉴权
-- 失败的运行会返回错误码
-  - `502`带`detail`，例如key错误
-  - `405`表示方法不
-  - `401`表示token不对
-
-### 2.2 修改并发阈值
-
-并发上限由`harness/cordis.patch.yml`的`maxConcurrent`控制
-
-```yaml
-config:
-  maxConcurrent: 4     # 同时运行的主Agent数；<=0表示不限
-```
-
-
-## 3 DEV
-
-- 1 在`agents/xagents/subagents/`下新建一个文件，如`my_agent.py`，定义`SubAgent`子类（`async def run`）并赋值给模块级`AGENT`（`name` 全局唯一
-- 2 删除就直接删文件，`registry.py`会自动扫描，无需改注册代码。
-- 3 在`harness/cordis.patch.yml`的`agents:`列表里加/删名字（外部服务可单独给`baseUrl`）
-- 4 若要进入流水线，把它加/删进`cordis.patch.yml`的`pipeline:`列表即可
+状态依次为 `queued`、`running`、`completed` 或 `failed`，并返回 `progress`、`stage`、`message`。Web 工具 `split_requirement_document` 会自动使用这个接口并轮询。
