@@ -49,6 +49,7 @@ class Settings:
     graceful_timeout: int
     output_dir: str
     max_source_mb: int
+    split_max_chars: int
 
 
 @lru_cache(maxsize=1)
@@ -70,6 +71,7 @@ def get_settings() -> Settings:
             str(Path(__file__).resolve().parents[2] / "outputs"),
         ),
         max_source_mb=_get_int("XAGENTS_MAX_SOURCE_MB", 200),
+        split_max_chars=_get_int("XAGENTS_SPLIT_MAX_CHARS", 120000),
     )
 
 

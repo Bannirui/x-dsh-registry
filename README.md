@@ -39,8 +39,26 @@ http://127.0.0.1:8080/
 
 ### 2.2 web会话输入
 
-- 显式指定输出路径 `调用split_requirement_document工具转换 需求样例.xlsx outputDir outputs 完成后告诉我markdownPath`
+- 显式指定输出路径 `调用split_requirement_document工具转换02-跨章节合并.docx outputDir设为outputs 完成后告诉我 treeDir`
 
-- 使用默认输出路径 `调用split_requirement_document工具转换 需求样例.pdf 完成后告诉我markdownPath`
+- 使用默认输出路径 `调用split_requirement_document工具转换02-跨章节合并.docx`
 
 ![](./doc/img/1792994052.png)
+
+### 2.3 输出结构
+
+每次任务创建独立目录，不会覆盖已有结果：
+
+```text
+<outputRoot>/<文档名>-<时间戳>/
+├── document.md                 # 转换后的 Markdown
+├── document.normalized.md      # 统一章节编号后的 Markdown
+├── convert_manifest.json       # 图片、待 OCR 页、告警
+├── source/                     # 源文件副本
+├── assets/                     # 抽取出的图片
+└── requirements/
+    ├── chunks.json             # 语义分块结果
+    ├── split_report.json       # 拆分与校验报告
+    ├── requirement_relations.json
+    └── <功能目录>/<功能>.md     # 条目化需求
+```

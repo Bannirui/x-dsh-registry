@@ -148,10 +148,11 @@ export function apply(ctx: Context, config: Config): void {
           const names = stages
             .map((stage) => (stage && typeof stage === 'object' && 'agent' in stage ? String((stage as { agent: unknown }).agent) : '?'))
             .join(' -> ')
-          const items = value.final && typeof value.final === 'object' && 'items' in value.final
-            ? (value.final as { items?: unknown[] }).items
-            : undefined
-          const count = Array.isArray(items) ? items.length : 0
+          const final = value.final && typeof value.final === 'object'
+            ? value.final as Record<string, unknown>
+            : {}
+          const items = Array.isArray(final.items) ? final.items : []
+          const count = typeof final.requirementCount === 'number' ? final.requirementCount : items.length
           return [{ type: 'text', text: `需求流水线完成(${names})：最终${count}条需求。` }]
         },
       },
@@ -218,7 +219,8 @@ export function apply(ctx: Context, config: Config): void {
       name: 'split_requirement_document',
       description:
         '把工作区里的 PDF / Word / Excel 需求文档转换为 Markdown，'
-        + '并生成包含章节、图片、OCR 待处理页和告警的 convert_manifest.json。'
+        + '按功能语义拆分 chunk，并组织成“一需求一 Markdown 文件”的目录树。'
+        + '同时输出 convert_manifest.json、chunks.json 和 split_report.json。'
         + 'path 必须是调用方通过 fs 工具确认存在的文件绝对路径。',
       parameters: {
         path: {
@@ -250,6 +252,14 @@ export function apply(ctx: Context, config: Config): void {
             assetCount: { type: 'integer', required: true },
             ocrPageCount: { type: 'integer', required: true },
             warningCount: { type: 'integer', required: true },
+            splitStatus: { type: 'string', required: true },
+            treeDir: { type: 'string', required: true },
+            chunksPath: { type: 'string', required: true },
+            normalizedMarkdownPath: { type: 'string', required: true },
+            requirementCount: { type: 'integer', required: true },
+            chunkCount: { type: 'integer', required: true },
+            splitWarningCount: { type: 'integer', required: true },
+            splitError: { type: 'string', required: true },
             message: { type: 'string', required: true },
           },
         },
@@ -279,6 +289,14 @@ export function apply(ctx: Context, config: Config): void {
           assetCount: numberField(data, 'assetCount'),
           ocrPageCount: numberField(data, 'ocrPageCount'),
           warningCount: numberField(data, 'warningCount'),
+          splitStatus: stringField(data, 'splitStatus'),
+          treeDir: stringField(data, 'treeDir'),
+          chunksPath: stringField(data, 'chunksPath'),
+          normalizedMarkdownPath: stringField(data, 'normalizedMarkdownPath'),
+          requirementCount: numberField(data, 'requirementCount'),
+          chunkCount: numberField(data, 'chunkCount'),
+          splitWarningCount: numberField(data, 'splitWarningCount'),
+          splitError: stringField(data, 'splitError'),
           message: stringField(data, 'message'),
         }
       },
