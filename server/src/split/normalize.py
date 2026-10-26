@@ -26,6 +26,19 @@ NON_FUNCTIONAL_HINTS = {
     "appendix": ("附录", "缩略语", "参考资料", "标定值"),
 }
 
+TITLE_QUALIFIER_RE = re.compile(r"[（(][^（）()]*[）)]\s*$")
+PLACEHOLDER_HINTS = (
+    "only for test",
+    "for test",
+    "placeholder",
+    "test only",
+    "todo",
+    "tbd",
+    "占位",
+    "仅用于测试",
+    "测试文本",
+)
+
 
 class SplitError(RuntimeError):
     """语义分块失败，消息直接展示给用户。"""
@@ -57,6 +70,7 @@ def build_chunks(
         drafts = _fallback_drafts(headings)
 
     drafts = _merge_same_canonical(drafts, warnings)
+    drafts, title_issues = _merge_same_title(drafts, headings, warnings)
     assigned: dict[str, dict] = {}
     selected: list[dict] = []
     for draft in drafts:
@@ -87,6 +101,7 @@ def build_chunks(
 
     _normalize_requirement_paths(chunks, headings, warnings)
     consistency_issues = _collect_consistency_issues(raw, chunks)
+    consistency_issues.extend(title_issues)
 
     types: dict[str, int] = {}
     for chunk in chunks:
@@ -228,6 +243,90 @@ def _merge_same_canonical(drafts: list[dict], warnings: list[str]) -> list[dict]
                 first["section_ids"].append(section_id)
         warnings.append(f"同名功能「{canonical}」出现多次，已合并为一个 chunk")
     return result
+
+
+def _merge_same_title(
+    drafts: list[dict],
+    headings: list[Heading],
+    warnings: list[str],
+) -> tuple[list[dict], list[dict]]:
+    by_id = {heading.section_id: heading for heading in headings if heading.section_id}
+    groups: dict[str, list[dict]] = {}
+    for draft in drafts:
+        if draft["chunk_type"] != "functional_requirement":
+            continue
+        key = _title_key(draft.get("title") or draft.get("canonical"))
+        if not key:
+            continue
+        groups.setdefault(key, []).append(draft)
+
+    issues: list[dict] = []
+    dropped: set[int] = set()
+    for key, group in groups.items():
+        if len(group) < 2:
+            continue
+        ordered = sorted(group, key=lambda draft: _draft_start(draft, by_id, len(headings)))
+        first = ordered[0]
+        display = str(first.get("title") or first.get("canonical") or key)
+        invalid = [
+            {
+                "section_id": section_id,
+                "text": by_id[section_id].title if section_id in by_id else "",
+            }
+            for draft in ordered
+            for section_id in draft["section_ids"]
+            if section_id not in by_id
+            or not by_id[section_id].has_body
+            or _is_placeholder(by_id[section_id].own_text)
+        ]
+        if invalid:
+            issues.append(
+                {
+                    "issue": f"存在标题相同的需求「{display}」，但正文为空或为占位文本，未自动合并",
+                    "evidence": invalid,
+                }
+            )
+            warnings.append(f"同名需求「{display}」包含空正文或占位文本，已保留为独立 chunk")
+            continue
+
+        for other in ordered[1:]:
+            for section_id in other["section_ids"]:
+                if section_id not in first["section_ids"]:
+                    first["section_ids"].append(section_id)
+            dropped.add(id(other))
+        raw = first.get("raw")
+        if not isinstance(raw, dict):
+            raw = {}
+            first["raw"] = raw
+        reason = _text(raw.get("merge_reason"))
+        raw["merge_reason"] = (
+            f"{reason}；标题相同，按语义相同合并" if reason else "标题相同，按语义相同合并"
+        )
+        warnings.append(f"标题相同的功能「{display}」已自动合并")
+
+    return [draft for draft in drafts if id(draft) not in dropped], issues
+
+
+def _draft_start(draft: dict, by_id: dict[str, Heading], default: int) -> int:
+    return min(
+        (by_id[section_id].start for section_id in draft["section_ids"] if section_id in by_id),
+        default=default,
+    )
+
+
+def _title_key(value: object) -> str:
+    text = _clean_name(value)
+    while True:
+        stripped = TITLE_QUALIFIER_RE.sub("", text).strip()
+        if stripped == text:
+            break
+        text = stripped
+    return _key(text)
+
+
+def _is_placeholder(value: str) -> bool:
+    lowered = (value or "").lower()
+    return any(hint in lowered for hint in PLACEHOLDER_HINTS)
 
 
 def _cover_unassigned(headings: list[Heading], assigned: dict[str, dict], selected: list[dict]) -> None:
