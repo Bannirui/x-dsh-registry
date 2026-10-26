@@ -130,6 +130,6 @@ async def run(name: str, body: RunBody) -> Any:
     try:
         output = await run_agent(name, body.input)
     except Exception as exc:  
-        logger.exception("子智能体 %s 执行失败", name)
+        logger.exception("服务 %s 执行失败", name)
         return _error(500, f"{type(exc).__name__}: {exc}")
     return RunResponse(output=output, stopReason="completed")

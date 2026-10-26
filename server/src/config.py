@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
 
 class ConfigError(RuntimeError):
@@ -46,6 +47,8 @@ class Settings:
     llm_timeout: float
     llm_max_retries: int
     graceful_timeout: int
+    output_dir: str
+    max_source_mb: int
 
 
 @lru_cache(maxsize=1)
@@ -62,6 +65,11 @@ def get_settings() -> Settings:
         llm_timeout=_get_float("XAGENTS_LLM_TIMEOUT", 120.0),
         llm_max_retries=_get_int("XAGENTS_LLM_MAX_RETRIES", 2),
         graceful_timeout=_get_int("XAGENTS_GRACEFUL_TIMEOUT", 30),
+        output_dir=os.environ.get(
+            "XAGENTS_OUTPUT_DIR",
+            str(Path(__file__).resolve().parents[2] / "outputs"),
+        ),
+        max_source_mb=_get_int("XAGENTS_MAX_SOURCE_MB", 200),
     )
 
 

@@ -1,59 +1,46 @@
-x-harness
+x-dsh
 ---
 
-## 1 REQUIREMENTS
+## 1 QUICK START
 
-- node 22+
-- python 3.10+（`build.sh` 会自动创建 `agents/.venv` 并安装 FastAPI/uvicorn/openai 等生产依赖）
-- [deepseek api key](https://platform.deepseek.com/api_keys)
-
-## 2 QUICK START
-
-启动服务端
+### 1.1 编译
 
 ```sh
 ./build.sh
-
-# 填写DEEPSEEK_API_KEY and X_HARNESS_TOKEN
-cp .env.example .env
-./run-web.sh
 ```
 
-客户端调用
+### 1.2 配置文件
 
 ```sh
-curl \
-  -X POST "http://127.0.0.1:8080/x/requirements" \
-  -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
-  -d '{"material":"this is test from http"}'
+cp .env.example .env
 ```
 
-### 2.1 要点
+> 填写或修改对应配置项目 尤其`DEEPSEEK_API_KEY`和`X_HARNESS_TOKEN`
 
-- 本版harness只允许绑定`127.0.0.1`，直接`--host 0.0.0.0`会被安全策略拒绝返回"intentionally not supported"，要让外部调用就保持 `WEB_HOST=127.0.0.1`，在前面加反向代理/隧道
-  - nginx：`location / { proxy_pass http://127.0.0.1:8080; }`（并在 nginx 层做 TLS + 鉴权）
-  - caddy：`reverse_proxy 127.0.0.1:8080`
-  - 临时：`ssh -L 8080:127.0.0.1:8080 user@host`
-- 无论是否走代理，务必设置`X_HARNESS_TOKEN`，否则接口无鉴权
-- 失败的运行会返回错误码
-  - `502`带`detail`，例如key错误
-  - `405`表示方法不
-  - `401`表示token不对
+### 1.3 启动
 
-### 2.2 修改并发阈值
-
-并发上限由`harness/cordis.patch.yml`的`maxConcurrent`控制
-
-```yaml
-config:
-  maxConcurrent: 4     # 同时运行的主Agent数；<=0表示不限
+```sh
+./run.sh
 ```
 
+### 1.4 交互
 
-## 3 DEV
+默认会自动拉起本地服务或者手动访问本地浏览器
 
-- 1 在`agents/xagents/subagents/`下新建一个文件，如`my_agent.py`，定义`SubAgent`子类（`async def run`）并赋值给模块级`AGENT`（`name` 全局唯一
-- 2 删除就直接删文件，`registry.py`会自动扫描，无需改注册代码。
-- 3 在`harness/cordis.patch.yml`的`agents:`列表里加/删名字（外部服务可单独给`baseUrl`）
-- 4 若要进入流水线，把它加/删进`cordis.patch.yml`的`pipeline:`列表即可
+```sh
+http://127.0.0.1:8080/
+```
+
+## 2 SAMPLES
+
+### 2.1 设置工作区
+
+![](./doc/img/1792993791.png)
+
+### 2.2 web会话输入
+
+- 显式指定输出路径 `调用split_requirement_document工具转换 需求样例.xlsx outputDir outputs 完成后告诉我markdownPath`
+
+- 使用默认输出路径 `调用split_requirement_document工具转换 需求样例.pdf 完成后告诉我markdownPath`
+
+![](./doc/img/1792994052.png)

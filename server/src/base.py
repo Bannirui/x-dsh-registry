@@ -45,7 +45,7 @@ def dump(value: object) -> str:
 
 
 @dataclass
-class SubAgent:
+class XAgent:
     """所有子智能体的基类
     约定
     ``async run(payload: dict) -> dict`` 返回值必须是JSON可序列化的dict

@@ -15,10 +15,10 @@ import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
 // 下面这些import只为触发Context上的服务类型增强
-import type {} from '@deepseek-ai/dsh-host-webserver'
-import type {} from '@deepseek-ai/dsh-agent'
-import type {} from '@deepseek-ai/dsh-agent-default-model'
-import type {} from '@deepseek-ai/dsh-fs'
+import type { } from '@deepseek-ai/dsh-host-webserver'
+import type { } from '@deepseek-ai/dsh-agent'
+import type { } from '@deepseek-ai/dsh-agent-default-model'
+import type { } from '@deepseek-ai/dsh-fs'
 
 export interface HttpApiConfig {
   /** Bearer token 未配置时回退到环境变量X_HARNESS_TOKEN 为空则不校验 */
@@ -144,13 +144,13 @@ export function registerHttpApi(ctx: Context, config: HttpApiConfig = {}): void 
         return summarize(agent.session, firstSeq)
       } finally {
         // 一次性请求：跑完释放该主Agent 避免会话/资源在内存里累积
-        await disposeAgent().catch(() => {})
+        await disposeAgent().catch(() => { })
       }
     }
 
     const dispose = webServer.register({
       kind: 'exact',
-      path: '/x/requirements',
+      path: '/x/dsh/registry',
       handler: async (req, res) => {
         if (token && req.headers.authorization !== `Bearer ${token}`) {
           writeJson(res, 401, { error: 'unauthorized' })
@@ -191,7 +191,7 @@ export function registerHttpApi(ctx: Context, config: HttpApiConfig = {}): void 
     c.effect(() => dispose, 'x-harness: http-api route')
     const concurrency = config.maxConcurrent && config.maxConcurrent > 0 ? config.maxConcurrent : 'unlimited'
     c.logger.info(
-      `x-harness: HTTP API at POST /x/requirements`
+      `x-harness: HTTP API at POST /x/dsh/registry`
       + `${token ? ' (bearer auth)' : ' (NO AUTH)'}, maxConcurrent=${concurrency}`,
     )
   })

@@ -3,7 +3,7 @@
 - 统一通过HTTP暴露，harness侧把每个子智能体注册成subagent provider
 """
 
-from .base import SubAgent
+from .base import XAgent
 from .registry import REGISTRY, run_agent
 
-__all__ = ["SubAgent", "REGISTRY", "run_agent"]
+__all__ = ["XAgent", "REGISTRY", "run_agent"]

@@ -1,18 +1,11 @@
-# 把插件挂进host组合树
-# `name`必须等于package.json的name
 - insert:
-    - id: x-requirements
-      name: x-harness
+    - id: x-dsh-registry
+      # npm包名
+      name: x-dsh
+      # 传给index和Config
       config:
         baseUrl: http://127.0.0.1:8077
         agents:
-          - name: extraction
-          - name: clarification
-          - name: completion
-          - name: echo
-        # 需求流水线顺序（每一步输出作为下一步输入）
+          - name: requirements_split
         pipeline:
-          - extraction
-          - clarification
-          - completion
-          - echo
+          - requirements_split

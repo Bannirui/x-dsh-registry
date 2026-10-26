@@ -1,4 +1,4 @@
-"""``python -m xagents``启动服务uvicorn"""
+"""``python -m xxx``启动服务uvicorn"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)-7s %(name)s %(message)s",
     )
     uvicorn.run(
-        "xagents.server:app",
+        "src.server:app",
         host=settings.host,
         port=settings.port,
         workers=settings.workers,
