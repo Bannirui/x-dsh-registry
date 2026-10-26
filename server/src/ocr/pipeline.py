@@ -49,6 +49,16 @@ def provider_name() -> str:
     return provider.name if provider is not None else "none"
 
 
+def effective_concurrency() -> int:
+    provider = _provider()
+    if provider is None:
+        return 1
+    if provider.name == "rapidocr":
+        # RapidOCR 的本地引擎按顺序执行，避免多线程同时调用同一模型。
+        return 1
+    return max(1, get_settings().ocr_concurrency)
+
+
 def ocr_page(image_bytes: bytes, *, page: int) -> OcrResult:
     provider = _provider()
     if provider is None:

@@ -69,6 +69,8 @@ class Settings:
     ocr_min_confidence: float
     ocr_concurrency: int
     ocr_max_pages: int
+    task_concurrency: int
+    task_max_jobs: int
 
 
 @lru_cache(maxsize=1)
@@ -103,6 +105,8 @@ def get_settings() -> Settings:
         ocr_min_confidence=_get_float("XAGENTS_OCR_MIN_CONFIDENCE", 0.5),
         ocr_concurrency=_get_int("XAGENTS_OCR_CONCURRENCY", 1),
         ocr_max_pages=_get_int("XAGENTS_OCR_MAX_PAGES", 50),
+        task_concurrency=_get_int("XAGENTS_TASK_CONCURRENCY", 2),
+        task_max_jobs=_get_int("XAGENTS_TASK_MAX_JOBS", 100),
     )
 
 

@@ -26,6 +26,15 @@ OUTPUT_KEYS = ("output_dir", "outputDir")
 logger = logging.getLogger("xagents.requirements_split")
 
 
+def _progress(payload: dict, value: int, stage: str, message: str = "") -> None:
+    callback = payload.get("_progress")
+    if callable(callback):
+        try:
+            callback(value, stage, message)
+        except Exception:  # noqa: BLE001 - 进度上报不能影响主流程
+            pass
+
+
 def _first_string(payload: dict, keys: tuple[str, ...]) -> str:
     for key in keys:
         value = payload.get(key)
@@ -80,6 +89,7 @@ def _output_root(payload: dict, base: Path | None = None) -> Path:
 
 
 def _convert_sync(payload: dict) -> dict:
+    _progress(payload, 5, "读取文档", "正在读取并校验源文件")
     raw_path = _first_string(payload, PATH_KEYS)
     text = _text(payload)
     title = _first_string(payload, ("title", "project_name", "projectName"))
@@ -129,6 +139,7 @@ def _convert_sync(payload: dict) -> dict:
     if warnings:
         message += f" 有 {len(warnings)} 条告警，详见 convert_manifest.json。"
 
+    _progress(payload, 35, "文档转换完成", f"已生成 {len(sections)} 个章节")
     return {
         "kind": "requirements-split-document",
         "taskId": task_dir.name,
@@ -181,7 +192,8 @@ def _prepare_split(conversion: dict) -> dict:
     }
 
 
-async def _semantic_split(conversion: dict) -> dict:
+async def _semantic_split(conversion: dict, progress) -> dict:
+    progress(40, "语义分块", "正在准备标题树并调用拆分模型")
     prepared = await asyncio.to_thread(_prepare_split, conversion)
     warnings: list[str] = []
     if prepared["compacted"]:
@@ -211,6 +223,7 @@ async def _semantic_split(conversion: dict) -> dict:
     else:
         raise SplitError(f"模型输出无法通过校验：{last_error}")
 
+    progress(70, "物理拆分", "正在按 section_id 拆分并组织需求目录")
     result = await asyncio.to_thread(
         run_pipeline,
         task_dir=prepared["taskDir"],
@@ -218,6 +231,7 @@ async def _semantic_split(conversion: dict) -> dict:
         chunks_data=chunks_data,
         manifest=prepared["manifest"],
     )
+    progress(95, "生成报告", "正在汇总需求、图片和 OCR 结果")
     combined_warnings = warnings + result["validationWarnings"] + result["assetWarnings"]
     return {
         "splitStatus": "completed",
@@ -239,6 +253,15 @@ async def _semantic_split(conversion: dict) -> dict:
 
 class RequirementsSplitAgent(XAgent):
     async def run(self, payload: dict) -> dict:
+        callback = payload.get("_progress")
+
+        def progress(value: int, stage: str, message: str = "") -> None:
+            if callable(callback):
+                try:
+                    callback(value, stage, message)
+                except Exception:  # noqa: BLE001
+                    pass
+
         conversion = await asyncio.to_thread(_convert_sync, payload)
         if payload.get("split") is False or str(payload.get("mode") or "").lower() == "convert":
             conversion.update(
@@ -263,7 +286,7 @@ class RequirementsSplitAgent(XAgent):
             return conversion
 
         try:
-            split = await _semantic_split(conversion)
+            split = await _semantic_split(conversion, progress)
         except Exception as exc:  # noqa: BLE001
             logger.exception("语义拆分失败：%s", exc)
             split = {

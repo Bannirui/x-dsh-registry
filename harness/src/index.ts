@@ -65,6 +65,71 @@ function numberField(value: Record<string, JsonValue>, key: string): number {
   return typeof field === 'number' ? field : 0
 }
 
+class TaskApiUnavailable extends Error {}
+
+interface TaskSnapshot {
+  taskId: string
+  status: string
+  progress: number
+  stage: string
+  message: string
+  result?: unknown
+  diagnostic?: string | null
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function submitTask(
+  baseUrl: string,
+  agentName: string,
+  input: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<string> {
+  const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/tasks/${encodeURIComponent(agentName)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ input }),
+    signal,
+  })
+  if (response.status === 404 || response.status === 405) {
+    throw new TaskApiUnavailable(`后端未提供 /tasks 接口（HTTP ${response.status}）`)
+  }
+  if (!response.ok) {
+    throw new Error(`创建拆分任务失败：HTTP ${response.status}`)
+  }
+  const body = await response.json() as { taskId?: unknown }
+  if (typeof body.taskId !== 'string' || body.taskId === '') {
+    throw new Error('创建拆分任务失败：后端未返回 taskId')
+  }
+  return body.taskId
+}
+
+async function pollTask(
+  baseUrl: string,
+  taskId: string,
+  signal: AbortSignal,
+  onProgress?: (snapshot: TaskSnapshot) => void,
+): Promise<JsonValue> {
+  const endpoint = `${baseUrl.replace(/\/+$/, '')}/tasks/${encodeURIComponent(taskId)}`
+  const deadline = Date.now() + 30 * 60 * 1000
+  while (true) {
+    if (Date.now() > deadline) throw new Error('拆分任务超过 30 分钟仍未完成')
+    const response = await fetch(endpoint, { signal })
+    if (!response.ok) throw new Error(`查询拆分任务失败：HTTP ${response.status}`)
+    const snapshot = await response.json() as TaskSnapshot
+    onProgress?.(snapshot)
+    if (snapshot.status === 'completed') {
+      return (snapshot.result ?? null) as JsonValue
+    }
+    if (snapshot.status === 'failed') {
+      throw new Error(snapshot.diagnostic || snapshot.message || '拆分任务失败')
+    }
+    await delay(1000)
+  }
+}
+
 /** 把子代理结果的文本块还原成JSON */
 function resultJson(result: SubagentResult, label: string): JsonValue {
   if (result.stopReason !== 'completed') {
@@ -242,6 +307,7 @@ export function apply(ctx: Context, config: Config): void {
           additionalProperties: false,
           properties: {
             kind: { type: 'string', required: true, const: 'requirements-split-document' },
+            jobId: { type: 'string', required: true },
             taskId: { type: 'string', required: true },
             outputDir: { type: 'string', required: true },
             markdownPath: { type: 'string', required: true },
@@ -277,15 +343,33 @@ export function apply(ctx: Context, config: Config): void {
         if (!ctx.subagents.getProvider('requirements_split')) {
           throw new Error('未注册的子智能体: requirements_split，请检查插件 agents 配置')
         }
-        const output = await callAgent(
-          'requirements_split',
-          { path: args.path, output_dir: args.outputDir, title: args.title },
-          parent,
-          exec.signal,
-        )
+        const baseUrl = agents.find((item) => item.name === 'requirements_split')?.baseUrl?.trim() || defaultBaseUrl
+        const input = { path: args.path, output_dir: args.outputDir, title: args.title }
+        let jobId = ''
+        let output: JsonValue
+        try {
+          jobId = await submitTask(baseUrl, 'requirements_split', input, exec.signal)
+          let lastLogged = -1
+          let lastStage = ''
+          output = await pollTask(baseUrl, jobId, exec.signal, (snapshot) => {
+            if (snapshot.progress >= lastLogged + 10 || snapshot.stage !== lastStage) {
+              lastLogged = snapshot.progress
+              lastStage = snapshot.stage
+              ctx.logger.info(
+                `x-dsh: 拆分任务 ${jobId} ${snapshot.progress}% ${snapshot.stage}`
+                + (snapshot.message ? ` - ${snapshot.message}` : ''),
+              )
+            }
+          })
+        } catch (error) {
+          if (!(error instanceof TaskApiUnavailable)) throw error
+          ctx.logger.warn(`x-dsh: ${String(error)}，回退到同步调用`)
+          output = await callAgent('requirements_split', input, parent, exec.signal)
+        }
         const data = jsonObject(output)
         return {
           kind: 'requirements-split-document' as const,
+          jobId,
           taskId: stringField(data, 'taskId'),
           outputDir: stringField(data, 'outputDir'),
           markdownPath: stringField(data, 'markdownPath'),

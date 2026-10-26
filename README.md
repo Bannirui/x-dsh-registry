@@ -70,3 +70,16 @@ http://127.0.0.1:8080/
 拆分后 Markdown 中的图片引用会重写为需求目录内的相对路径，例如 `assets/img_001.png`。
 
 图片型 PDF 默认使用本地 RapidOCR，在 Markdown 中写入 `<!-- OCR page N provider=... -->` 标记，并在 `convert_manifest.json` 的 `ocr_pages` 中记录识别状态。可通过 `XAGENTS_OCR_PROVIDER=vision` 切换到 OpenAI 兼容的视觉模型。
+## 3 长任务接口
+
+拆分任务也可以用异步接口提交，避免大文件长时间占用单个 HTTP 请求：
+
+```sh
+curl -s -X POST http://127.0.0.1:8077/tasks/requirements_split \
+  -H 'content-type: application/json' \
+  -d '{"input":{"path":"/absolute/path/需求文档.pdf","output_dir":"/tmp/outputs"}}'
+
+curl -s http://127.0.0.1:8077/tasks/<taskId>
+```
+
+状态依次为 `queued`、`running`、`completed` 或 `failed`，并返回 `progress`、`stage`、`message`。Web 工具 `split_requirement_document` 会自动使用这个接口并轮询。

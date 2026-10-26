@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from . import llm
 from .config import ConfigError, get_settings, require_api_key
 from .registry import REGISTRY, run_agent
+from .tasks import TaskManager
 
 logger = logging.getLogger("xagents")
 
@@ -51,6 +52,24 @@ class HealthResponse(BaseModel):
     agents: list[str] | None = None
 
 
+class TaskSubmitResponse(BaseModel):
+    taskId: str
+    status: str
+
+
+class TaskResponse(BaseModel):
+    taskId: str
+    agent: str
+    status: str
+    progress: int
+    stage: str
+    message: str
+    createdAt: str
+    updatedAt: str
+    result: Any = None
+    diagnostic: str | None = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -77,6 +96,11 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
+)
+
+TASKS = TaskManager(
+    max_concurrency=get_settings().task_concurrency,
+    max_jobs=get_settings().task_max_jobs,
 )
 
 
@@ -133,3 +157,25 @@ async def run(name: str, body: RunBody) -> Any:
         logger.exception("服务 %s 执行失败", name)
         return _error(500, f"{type(exc).__name__}: {exc}")
     return RunResponse(output=output, stopReason="completed")
+
+
+@app.post("/tasks/{name}", response_model=TaskSubmitResponse, responses={404: {"model": RunResponse}})
+async def submit_task(name: str, body: RunBody) -> Any:
+    if name not in REGISTRY:
+        return _error(404, f"unknown agent: {name}")
+    snapshot = await TASKS.submit(name, body.input)
+    logger.info("创建长任务 %s（agent=%s）", snapshot.get("taskId"), name)
+    return TaskSubmitResponse(taskId=snapshot["taskId"], status=snapshot["status"])
+
+
+@app.get("/tasks", response_model=list[TaskResponse])
+async def list_tasks() -> Any:
+    return TASKS.list()
+
+
+@app.get("/tasks/{task_id}", response_model=TaskResponse, responses={404: {"model": RunResponse}})
+async def get_task(task_id: str) -> Any:
+    snapshot = TASKS.snapshot(task_id)
+    if snapshot is None:
+        return _error(404, f"未知任务：{task_id}")
+    return TaskResponse(**snapshot)

@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from ..config import get_settings
-from ..ocr import ocr_page
+from ..ocr import OcrResult, effective_concurrency, ocr_page
 from .base import ConversionError, ConversionResult, SectionTracker
 
 IMAGE_MD = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
@@ -56,7 +57,6 @@ def convert_pdf(source: Path, assets_dir: Path) -> ConversionResult:
     assets: list[dict] = []
     seen_assets: set[str] = set()
     settings = get_settings()
-    ocr_used = 0
 
     try:
         import pymupdf
@@ -65,20 +65,19 @@ def convert_pdf(source: Path, assets_dir: Path) -> ConversionResult:
     except Exception:
         document = None
 
+    ocr_map = _prefetch_ocr(pages, settings, document)
+
     try:
         for index, page in enumerate(pages, start=1):
             page_number = int((page.get("metadata") or {}).get("page") or index)
             original_text = page.get("text") or ""
-            text, ocr_note, ocr_used = _apply_ocr(
-                original_text,
-                page_number=page_number,
-                settings=settings,
-                document=document,
-                ocr_used=ocr_used,
-            )
-            if ocr_note:
-                ocr_pages.append(ocr_note["page_info"])
-                warnings.extend(ocr_note["warnings"])
+            entry = ocr_map.get(page_number)
+            if entry is None:
+                text = original_text
+            else:
+                text = entry["text"]
+                ocr_pages.append(entry["page_info"])
+                warnings.extend(entry["warnings"])
 
             current_section = ""
             rendered: list[str] = []
@@ -145,53 +144,101 @@ def convert_pdf(source: Path, assets_dir: Path) -> ConversionResult:
     )
 
 
-def _apply_ocr(
-    original_text: str,
-    *,
-    page_number: int,
-    settings,
-    document,
-    ocr_used: int,
-) -> tuple[str, dict | None, int]:
-    plain = _plain_text(original_text)
-    if len(plain) >= LOW_TEXT_CHARS:
-        return original_text, None, ocr_used
+def _prefetch_ocr(pages: list[dict], settings, document) -> dict[int, dict]:
+    low_pages: list[tuple[int, str]] = []
+    for index, page in enumerate(pages, start=1):
+        page_number = int((page.get("metadata") or {}).get("page") or index)
+        original_text = page.get("text") or ""
+        if len(_plain_text(original_text)) < LOW_TEXT_CHARS:
+            low_pages.append((page_number, original_text))
+    if not low_pages:
+        return {}
 
-    info = {"page": page_number, "reason": "文本层为空或过少", "status": "pending"}
+    results: dict[int, dict] = {}
     if not settings.ocr_enabled:
-        info["error"] = "OCR 未启用"
-        return original_text, {"page_info": info, "warnings": [f"第 {page_number} 页文本过少，OCR 未启用，已保留原始图片"]}, ocr_used
-    if settings.ocr_max_pages > 0 and ocr_used >= settings.ocr_max_pages:
-        info["status"] = "skipped"
-        info["error"] = f"超过单文档 OCR 页数上限 {settings.ocr_max_pages}"
-        return original_text, {"page_info": info, "warnings": [f"第 {page_number} 页跳过 OCR：{info['error']}"]}, ocr_used
+        for page_number, original_text in low_pages:
+            info = {"page": page_number, "reason": "文本层为空或过少", "status": "pending", "error": "OCR 未启用"}
+            results[page_number] = {
+                "text": original_text,
+                "page_info": info,
+                "warnings": [f"第 {page_number} 页文本过少，OCR 未启用，已保留原始图片"],
+            }
+        return results
 
-    image_bytes = _render_page(document, page_number, settings.ocr_dpi)
-    if not image_bytes:
-        info["status"] = "failed"
-        info["error"] = "页面渲染失败"
-        return original_text, {"page_info": info, "warnings": [f"第 {page_number} 页 OCR 失败：页面渲染失败"]}, ocr_used + 1
+    max_pages = settings.ocr_max_pages
+    if max_pages > 0 and len(low_pages) > max_pages:
+        for page_number, original_text in low_pages[max_pages:]:
+            info = {
+                "page": page_number,
+                "reason": "文本层为空或过少",
+                "status": "skipped",
+                "error": f"超过单文档 OCR 页数上限 {max_pages}",
+            }
+            results[page_number] = {
+                "text": original_text,
+                "page_info": info,
+                "warnings": [f"第 {page_number} 页跳过 OCR：{info['error']}"],
+            }
+        low_pages = low_pages[:max_pages]
 
-    result = ocr_page(image_bytes, page=page_number)
-    info.update(
-        {
-            "status": "completed" if result.ok else "failed",
-            "provider": result.provider,
-            "model": result.model,
-            "chars": len(result.text),
-            "duration": round(result.duration, 3),
-            "confidence": round(result.confidence, 4) if result.confidence is not None else None,
-            "attempts": result.attempts,
+    jobs: list[tuple[int, str, bytes]] = []
+    for page_number, original_text in low_pages:
+        image_bytes = _render_page(document, page_number, settings.ocr_dpi)
+        if not image_bytes:
+            info = {"page": page_number, "reason": "文本层为空或过少", "status": "failed", "error": "页面渲染失败"}
+            results[page_number] = {
+                "text": original_text,
+                "page_info": info,
+                "warnings": [f"第 {page_number} 页 OCR 失败：页面渲染失败"],
+            }
+            continue
+        jobs.append((page_number, original_text, image_bytes))
+
+    if not jobs:
+        return results
+
+    workers = effective_concurrency()
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(ocr_page, image_bytes, page=page_number): (page_number, original_text)
+            for page_number, original_text, image_bytes in jobs
         }
-    )
+        for future in as_completed(futures):
+            page_number, original_text = futures[future]
+            try:
+                result = future.result()
+            except Exception as exc:  # noqa: BLE001
+                result = OcrResult(
+                    text="",
+                    provider="unknown",
+                    error=f"OCR 线程异常：{type(exc).__name__}: {exc}",
+                )
+            results[page_number] = _ocr_entry(original_text, page_number, result)
+    return results
+
+
+def _ocr_entry(original_text: str, page_number: int, result: OcrResult) -> dict:
+    info = {
+        "page": page_number,
+        "reason": "文本层为空或过少",
+        "status": "completed" if result.ok else "failed",
+        "provider": result.provider,
+        "model": result.model,
+        "chars": len(result.text),
+        "duration": round(result.duration, 3),
+        "confidence": round(result.confidence, 4) if result.confidence is not None else None,
+        "attempts": result.attempts,
+    }
     if result.error:
         info["error"] = result.error
     if not result.ok:
-        return (
-            original_text,
-            {"page_info": info, "warnings": [f"第 {page_number} 页 OCR 失败：{result.error or '未识别到文字'}，已保留原始图片"]},
-            ocr_used + 1,
-        )
+        return {
+            "text": original_text,
+            "page_info": info,
+            "warnings": [
+                f"第 {page_number} 页 OCR 失败：{result.error or '未识别到文字'}，已保留原始图片"
+            ],
+        }
 
     refs = _image_references(original_text)
     marker = (
@@ -201,7 +248,7 @@ def _apply_ocr(
     text = marker + "\n\n" + result.text.strip()
     if refs:
         text = text + "\n\n" + "\n".join(refs)
-    return text, {"page_info": info, "warnings": []}, ocr_used + 1
+    return {"text": text, "page_info": info, "warnings": []}
 
 
 def _plain_text(text: str) -> str:
