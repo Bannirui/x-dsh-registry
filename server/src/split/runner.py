@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import os
 import re
 import subprocess
@@ -182,7 +184,7 @@ def _write_final_markdown(
     chunks: list[dict],
     source_name: str,
 ) -> Path:
-    content = _rewrite_local_asset_refs(
+    content = _embed_local_images(
         markdown_path.read_text(encoding="utf-8"),
         source_dir=markdown_path.parent,
         target_dir=requirements_dir,
@@ -349,14 +351,53 @@ def _drop_empty_merge_parents(content: str, original_headings: list, merged_head
         content = content[: target.start] + content[target.end :]
 
 
-def _rewrite_local_asset_refs(content: str, *, source_dir: Path, target_dir: Path) -> str:
+def _embed_local_images(content: str, *, source_dir: Path, target_dir: Path) -> str:
+    cache: dict[str, str | None] = {}
+
     def replace(match: re.Match[str]) -> str:
-        reference = match.group(2)
-        rewritten = _relative_to_target(reference, source_dir, target_dir)
-        return f"{match.group(1)}{rewritten}{match.group(3)}"
+        reference = match.group(2).strip()
+        embedded = _embed_image(reference, source_dir, cache)
+        if embedded is None:
+            embedded = _relative_to_target(reference, source_dir, target_dir)
+        return f"{match.group(1)}{embedded}{match.group(3)}"
 
     content = FINAL_IMAGE_MD.sub(replace, content)
     return FINAL_IMAGE_HTML.sub(replace, content)
+
+
+def _embed_image(reference: str, source_dir: Path, cache: dict[str, str | None]) -> str | None:
+    if not reference or reference.startswith(EXTERNAL_REF_PREFIXES):
+        return None
+    if reference in cache:
+        return cache[reference]
+    candidate = Path(reference)
+    path = candidate if candidate.is_absolute() else source_dir / candidate
+    data_uri = None
+    try:
+        if path.is_file():
+            mime = _image_mime(path)
+            if mime:
+                payload = base64.b64encode(path.read_bytes()).decode("ascii")
+                data_uri = f"data:{mime};base64,{payload}"
+    except OSError:
+        data_uri = None
+    cache[reference] = data_uri
+    return data_uri
+
+
+def _image_mime(path: Path) -> str | None:
+    mime, _ = mimetypes.guess_type(path.name)
+    if mime and mime.startswith("image/"):
+        return mime
+    return {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".svg": "image/svg+xml",
+    }.get(path.suffix.lower())
 
 
 def _relative_to_target(reference: str, source_dir: Path, target_dir: Path) -> str:
