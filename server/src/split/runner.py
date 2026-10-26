@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .assets import follow_assets
+
 SCRIPTS_DIR = Path(__file__).resolve().parent / "scripts"
 
 
@@ -20,6 +22,7 @@ def run_pipeline(
     task_dir: Path,
     markdown_path: Path,
     chunks_data: dict,
+    manifest: dict | None = None,
     timeout: int = 240,
 ) -> dict:
     requirements_dir = task_dir / "requirements"
@@ -41,6 +44,32 @@ def run_pipeline(
         timeout=timeout,
     )
     _run_script("organize_tree.py", requirements_dir, report=report, timeout=timeout)
+    organized_chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
+
+    try:
+        asset_result = follow_assets(
+            task_dir=task_dir,
+            requirements_dir=requirements_dir,
+            chunks_data=organized_chunks,
+            manifest=manifest or {},
+        )
+    except Exception as exc:  # noqa: BLE001
+        asset_result = {
+            "copiedAssetCount": 0,
+            "unmappedAssetCount": 0,
+            "danglingImageCount": 0,
+            "assetWarnings": [f"图片跟随失败：{type(exc).__name__}: {exc}"],
+            "assetReportPath": "",
+        }
+    report.append(
+        {
+            "script": "follow_assets.py",
+            "copied": asset_result["copiedAssetCount"],
+            "unmapped": asset_result["unmappedAssetCount"],
+            "dangling": asset_result["danglingImageCount"],
+            "warnings": asset_result["assetWarnings"],
+        }
+    )
 
     validation_warnings: list[str] = []
     for name in ("validate_toc.py", "validate_output.py"):
@@ -77,15 +106,20 @@ def run_pipeline(
         for path in requirements_dir.rglob("*.md")
     )
     functional_count = sum(
-        1 for chunk in chunks_data.get("chunks", []) if chunk.get("chunk_type") == "functional_requirement"
+        1 for chunk in organized_chunks.get("chunks", []) if chunk.get("chunk_type") == "functional_requirement"
     )
     return {
         "treeDir": str(requirements_dir),
         "chunksPath": str(chunks_path),
         "requirementCount": functional_count,
-        "chunkCount": len(chunks_data.get("chunks", [])),
+        "chunkCount": len(organized_chunks.get("chunks", [])),
         "files": files,
         "validationWarnings": validation_warnings,
+        "assetWarnings": asset_result["assetWarnings"],
+        "copiedAssetCount": asset_result["copiedAssetCount"],
+        "unmappedAssetCount": asset_result["unmappedAssetCount"],
+        "danglingImageCount": asset_result["danglingImageCount"],
+        "assetReportPath": asset_result["assetReportPath"],
     }
 
 

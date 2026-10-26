@@ -55,10 +55,15 @@ http://127.0.0.1:8080/
 ├── document.normalized.md      # 统一章节编号后的 Markdown
 ├── convert_manifest.json       # 图片、待 OCR 页、告警
 ├── source/                     # 源文件副本
-├── assets/                     # 抽取出的图片
+├── assets/                     # 抽取出的原始图片
 └── requirements/
     ├── chunks.json             # 语义分块结果
     ├── split_report.json       # 拆分与校验报告
+    ├── assets_report.json      # 图片跟随/悬空引用报告
     ├── requirement_relations.json
-    └── <功能目录>/<功能>.md     # 条目化需求
+    └── <功能目录>/
+        ├── <功能>.md           # 条目化需求
+        └── assets/             # 跟随该需求的图片
 ```
+
+拆分后 Markdown 中的图片引用会重写为需求目录内的相对路径，例如 `assets/img_001.png`。

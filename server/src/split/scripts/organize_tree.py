@@ -114,8 +114,7 @@ def main() -> None:
         if destination.exists() and destination.resolve() != source.resolve():
             raise FileExistsError(f"Refusing to overwrite existing file: {destination}")
         shutil.move(str(source), str(destination))
-        if chunk.get("chunk_type") == "functional_requirement":
-            chunk["source_relative_path"] = destination.relative_to(output_dir).as_posix()
+        chunk["source_relative_path"] = destination.relative_to(output_dir).as_posix()
         print(f"[OK] {chunk_id} -> {destination.relative_to(output_dir)}")
 
     leftovers = sorted(output_dir.glob("chunk_*.md"))

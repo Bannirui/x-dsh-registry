@@ -210,8 +210,9 @@ async def _semantic_split(conversion: dict) -> dict:
         task_dir=prepared["taskDir"],
         markdown_path=prepared["normalizedPath"],
         chunks_data=chunks_data,
+        manifest=prepared["manifest"],
     )
-    combined_warnings = warnings + result["validationWarnings"]
+    combined_warnings = warnings + result["validationWarnings"] + result["assetWarnings"]
     return {
         "splitStatus": "completed",
         "treeDir": result["treeDir"],
@@ -222,6 +223,10 @@ async def _semantic_split(conversion: dict) -> dict:
         "splitWarningCount": len(combined_warnings),
         "splitWarnings": combined_warnings,
         "deliverableFiles": result["files"],
+        "copiedAssetCount": result["copiedAssetCount"],
+        "unmappedAssetCount": result["unmappedAssetCount"],
+        "danglingImageCount": result["danglingImageCount"],
+        "assetReportPath": result["assetReportPath"],
     }
 
 
@@ -241,6 +246,10 @@ class RequirementsSplitAgent(XAgent):
                     "splitWarnings": [],
                     "splitError": "",
                     "deliverableFiles": [],
+                    "copiedAssetCount": 0,
+                    "unmappedAssetCount": 0,
+                    "danglingImageCount": 0,
+                    "assetReportPath": "",
                 }
             )
             return conversion
@@ -260,6 +269,10 @@ class RequirementsSplitAgent(XAgent):
                 "splitWarningCount": 0,
                 "splitWarnings": [],
                 "deliverableFiles": [],
+                "copiedAssetCount": 0,
+                "unmappedAssetCount": 0,
+                "danglingImageCount": 0,
+                "assetReportPath": "",
             }
         conversion.update(split)
 
@@ -268,6 +281,10 @@ class RequirementsSplitAgent(XAgent):
                 f" 已拆分出 {split['requirementCount']} 条功能需求、"
                 f"{split['chunkCount']} 个 chunk，目录：{split['treeDir']}。"
             )
+            if split["copiedAssetCount"]:
+                conversion["message"] += f" 已跟随 {split['copiedAssetCount']} 张图片。"
+            if split["danglingImageCount"]:
+                conversion["message"] += f" 有 {split['danglingImageCount']} 个图片引用无法解析。"
             if split["splitWarningCount"]:
                 conversion["message"] += f" 拆分阶段有 {split['splitWarningCount']} 条告警，详见 split_report.json。"
         elif split["splitStatus"] == "failed":

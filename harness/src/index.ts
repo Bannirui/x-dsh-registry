@@ -46,7 +46,6 @@ export const Config = z.object({
 
 const DEFAULT_AGENTS: AgentEndpoint[] = [
   { name: 'requirements_split' },
-  { name: 'hello' },
 ]
 const DEFAULT_PIPELINE = ['requirements_split']
 
@@ -259,6 +258,10 @@ export function apply(ctx: Context, config: Config): void {
             requirementCount: { type: 'integer', required: true },
             chunkCount: { type: 'integer', required: true },
             splitWarningCount: { type: 'integer', required: true },
+            copiedAssetCount: { type: 'integer', required: true },
+            unmappedAssetCount: { type: 'integer', required: true },
+            danglingImageCount: { type: 'integer', required: true },
+            assetReportPath: { type: 'string', required: true },
             splitError: { type: 'string', required: true },
             message: { type: 'string', required: true },
           },
@@ -296,6 +299,10 @@ export function apply(ctx: Context, config: Config): void {
           requirementCount: numberField(data, 'requirementCount'),
           chunkCount: numberField(data, 'chunkCount'),
           splitWarningCount: numberField(data, 'splitWarningCount'),
+          copiedAssetCount: numberField(data, 'copiedAssetCount'),
+          unmappedAssetCount: numberField(data, 'unmappedAssetCount'),
+          danglingImageCount: numberField(data, 'danglingImageCount'),
+          assetReportPath: stringField(data, 'assetReportPath'),
           splitError: stringField(data, 'splitError'),
           message: stringField(data, 'message'),
         }
