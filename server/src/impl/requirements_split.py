@@ -238,6 +238,7 @@ async def _semantic_split(conversion: dict, progress) -> dict:
         "treeDir": result["treeDir"],
         "chunksPath": result["chunksPath"],
         "reportPath": result["reportPath"],
+        "finalPath": result["finalPath"],
         "normalizedMarkdownPath": str(prepared["normalizedPath"]),
         "requirementCount": result["requirementCount"],
         "chunkCount": result["chunkCount"],
@@ -270,6 +271,7 @@ class RequirementsSplitAgent(XAgent):
                     "treeDir": "",
                     "chunksPath": "",
                     "reportPath": "",
+                    "finalPath": "",
                     "normalizedMarkdownPath": "",
                     "requirementCount": 0,
                     "chunkCount": 0,
@@ -295,6 +297,7 @@ class RequirementsSplitAgent(XAgent):
                 "treeDir": "",
                 "chunksPath": "",
                 "reportPath": "",
+                "finalPath": "",
                 "normalizedMarkdownPath": "",
                 "requirementCount": 0,
                 "chunkCount": 0,
@@ -313,6 +316,8 @@ class RequirementsSplitAgent(XAgent):
                 f" 已拆分出 {split['requirementCount']} 条功能需求、"
                 f"{split['chunkCount']} 个 chunk，目录：{split['treeDir']}。"
             )
+            if split.get("finalPath"):
+                conversion["message"] += f" 完整汇总：{split['finalPath']}。"
             if split["copiedAssetCount"]:
                 conversion["message"] += f" 已跟随 {split['copiedAssetCount']} 张图片。"
             if split["danglingImageCount"]:

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .assets import follow_assets
+from .outline import parse_outline
 
 SCRIPTS_DIR = Path(__file__).resolve().parent / "scripts"
 
@@ -97,6 +98,13 @@ def run_pipeline(
                 f"{name} 未完成：{_short_error(result['stdout'] + result['stderr'])}"
             )
 
+    final_path = _write_final_markdown(
+        requirements_dir=requirements_dir,
+        markdown_path=markdown_path,
+        chunks=organized_chunks.get("chunks", []),
+        source_name=str((manifest or {}).get("source", {}).get("name") or task_dir.name),
+    )
+
     (requirements_dir / "split_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -133,6 +141,8 @@ def run_pipeline(
         "tree_dir": str(requirements_dir),
         "chunks_path": str(chunks_path),
         "asset_report_path": asset_result["assetReportPath"],
+        "final_path": str(final_path),
+        "final_chars": len(final_path.read_text(encoding="utf-8")),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     report_path = requirements_dir / "report.json"
@@ -154,7 +164,65 @@ def run_pipeline(
         "unmappedAssetCount": asset_result["unmappedAssetCount"],
         "danglingImageCount": asset_result["danglingImageCount"],
         "assetReportPath": asset_result["assetReportPath"],
+        "finalPath": str(final_path),
     }
+
+
+def _write_final_markdown(
+    *,
+    requirements_dir: Path,
+    markdown_path: Path,
+    chunks: list[dict],
+    source_name: str,
+) -> Path:
+    headings = parse_outline(markdown_path.read_text(encoding="utf-8"))
+    order = {heading.section_id: index for index, heading in enumerate(headings)}
+
+    def position(chunk: dict) -> tuple[int, str]:
+        values = [
+            order.get(str(section.get("section_id")))
+            for section in chunk.get("source_sections", [])
+            if isinstance(section, dict) and section.get("section_id")
+        ]
+        available = [value for value in values if value is not None]
+        return (min(available) if available else len(order), str(chunk.get("chunk_id") or ""))
+
+    title = Path(source_name).stem or "需求文档"
+    parts = [f"# {title}", ""]
+    for chunk in sorted(chunks, key=position):
+        relative = str(chunk.get("source_relative_path") or "")
+        if not relative:
+            continue
+        md_path = requirements_dir / relative
+        if not md_path.is_file():
+            continue
+        content = md_path.read_text(encoding="utf-8").strip()
+        if not content:
+            continue
+        prefix = Path(relative).parent.as_posix()
+        if prefix and prefix != ".":
+            content = _prefix_asset_refs(content, prefix)
+        parts.append(content)
+        parts.append("")
+
+    final_path = requirements_dir / "final.md"
+    final_path.write_text("\n".join(parts).strip() + "\n", encoding="utf-8")
+    return final_path
+
+
+def _prefix_asset_refs(content: str, prefix: str) -> str:
+    content = re.sub(
+        r"(!\[[^\]]*\]\()(\./)?assets/",
+        lambda match: f"{match.group(1)}{prefix}/assets/",
+        content,
+    )
+    content = re.sub(
+        r"(<img[^>]*\bsrc=[\"'])(\./)?assets/",
+        lambda match: f"{match.group(1)}{prefix}/assets/",
+        content,
+        flags=re.IGNORECASE,
+    )
+    return content
 
 
 def _run_script(

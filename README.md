@@ -39,7 +39,7 @@ http://127.0.0.1:8080/
 
 ### 2.2 web会话输入
 
-- 显式指定输出路径 `调用split_requirement_document工具转换02-跨章节合并.docx outputDir设为outputs 完成后告诉我 treeDir`
+- 显式指定输出路径 `调用split_requirement_document工具转换02-跨章节合并.docx outputDir设为output`
 
 - 使用默认输出路径 `调用split_requirement_document工具转换02-跨章节合并.docx`
 
@@ -51,8 +51,8 @@ http://127.0.0.1:8080/
 
 ```text
 <outputRoot>/<文档名>-<时间戳>/
-├── document.md                 # 转换后的 Markdown
-├── document.normalized.md      # 统一章节编号后的 Markdown
+├── document.md                 # 转换后的 Markdown(中间产物)
+├── document.normalized.md      # 统一章节编号后的 Markdown(中间产物)
 ├── convert_manifest.json       # 图片、待 OCR 页、告警
 ├── source/                     # 源文件副本
 ├── assets/                     # 抽取出的原始图片
@@ -61,6 +61,7 @@ http://127.0.0.1:8080/
     ├── split_report.json       # 拆分与校验报告
     ├── assets_report.json      # 图片跟随/悬空引用报告
     ├── report.json             # 最终汇总（需求/合并/图片/OCR/告警）
+    ├── final.md                # 按文档顺序拼接的完整 Markdown（导出/阅读用）
     ├── requirement_relations.json
     └── <功能目录>/
         ├── <功能>.md           # 条目化需求
