@@ -13,6 +13,7 @@ from ..base import XAgent
 from ..config import get_settings
 from ..convert import ConversionError, convert_file, convert_text, write_manifest
 from ..convert.base import TEXT_KEYS, new_task_dir
+from ..ocr import build_ocr_context
 from ..split import SplitError, SplitRunError, build_chunks, run_pipeline
 from ..split.outline import compact_markdown, normalize_markdown, outline_text
 from ..split.prompts import SYSTEM_PROMPT, build_user_prompt
@@ -106,7 +107,8 @@ def _convert_sync(payload: dict) -> dict:
             shutil.copy2(source, copied)
         except OSError as exc:
             raise ConversionError(f"复制源文件失败：{exc}") from exc
-        manifest = convert_file(copied, task_dir)
+        ocr_ctx = build_ocr_context(payload.get("ocr"), str(payload.get("ocrProfile") or payload.get("ocr_profile") or ""))
+        manifest = convert_file(copied, task_dir, ocr_ctx=ocr_ctx)
         manifest["source"]["original_path"] = str(source)
         manifest["source"]["copy_path"] = copied.relative_to(task_dir).as_posix()
         manifest_path = write_manifest(task_dir, manifest)
@@ -192,7 +194,11 @@ def _prepare_split(conversion: dict) -> dict:
     }
 
 
-async def _semantic_split(conversion: dict, progress) -> dict:
+async def _semantic_split(
+    conversion: dict,
+    progress,
+    llm_config: llm.LlmConfig,
+) -> dict:
     progress(40, "语义分块", "正在准备标题树并调用拆分模型")
     prepared = await asyncio.to_thread(_prepare_split, conversion)
     warnings: list[str] = []
@@ -203,7 +209,7 @@ async def _semantic_split(conversion: dict, progress) -> dict:
     raw = None
     last_error: Exception | None = None
     for attempt in range(2):
-        raw = await llm.complete_json(SYSTEM_PROMPT, prompt)
+        raw = await llm.complete_json(SYSTEM_PROMPT, prompt, llm_config)
         try:
             chunks_data = build_chunks(
                 raw,
@@ -288,7 +294,14 @@ class RequirementsSplitAgent(XAgent):
             return conversion
 
         try:
-            split = await _semantic_split(conversion, progress)
+            llm_config = llm.resolve_llm_config(payload.get("llm"))
+            logger.info(
+                "语义分块模型：%s（base_url=%s，来源=%s）",
+                llm_config.model,
+                llm_config.base_url,
+                llm_config.source,
+            )
+            split = await _semantic_split(conversion, progress, llm_config)
         except Exception as exc:  # noqa: BLE001
             logger.exception("语义拆分失败：%s", exc)
             split = {

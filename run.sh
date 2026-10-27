@@ -15,7 +15,9 @@ if [ -f .env ]; then
   set +a
 fi
 
-: "${DEEPSEEK_API_KEY:?请先在.env或环境变量里设置DEEPSEEK_API_KEY}"
+export DSH_HOME="${DSH_HOME:-$HARNESS/.dsh-home}"
+# 模型 key 统一从 harness Web 的 Models 页面（凭据库）读取，不再使用环境变量。
+unset DEEPSEEK_API_KEY
 
 PORT="${XAGENTS_PORT:-8077}"
 WEB_PORT="${WEB_PORT:-8080}"
@@ -48,7 +50,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo ">>> 1/4 启动py服务(:$PORT)"
-( cd "$AGENTS" && XAGENTS_PORT="$PORT" "$PY" -m "$AGENTS_ALIAS" ) & S1=$!
+( cd "$AGENTS" && XAGENTS_PORT="$PORT" DSH_HOME="$DSH_HOME" "$PY" -m "$AGENTS_ALIAS" ) & S1=$!
 for _ in $(seq 1 50); do
   curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break
   sleep 0.2
@@ -56,14 +58,13 @@ done
 curl -sf "http://127.0.0.1:$PORT/health" >/dev/null || { echo "py应用启动失败" >&2; exit 1; }
 
 cd "$HARNESS"
-if [ ! -d node_modules ]; then
+if [ ! -d node_modules ] || [ ! -d node_modules/react ] || [ ! -d node_modules/@types/react ]; then
   echo ">>> 2/4 安装harness依赖"
   npm install --no-audit --no-fund
 fi
 echo ">>> 2/4 构建插件"
 npm run --silent build
 
-export DSH_HOME="${DSH_HOME:-$HARNESS/.dsh-home}"
 DSH="./node_modules/.bin/dsh"
 
 echo ">>> 3/4 安装插件到web profile"
@@ -109,11 +110,6 @@ cat <<EOF
     Web UI   : $WEB_URL
     HTTP API : POST http://$WEB_HOST:$WEB_PORT/x/dsh/registry
     鉴权     : $AUTH_HINT
-    示例:
-      curl -s http://$WEB_HOST:$WEB_PORT/x/dsh/registry\\
-        -H 'content-type: application/json' \\
-        $AUTH_LINE
-        -d '{"material":"用户必须能注册并登录；登录响应时间<500ms"}'
 
     按 Ctrl-C 停止。
 EOF

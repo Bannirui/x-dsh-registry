@@ -9,8 +9,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from ..config import get_settings
-from ..ocr import OcrResult, effective_concurrency, ocr_page
+from ..ocr import OcrContext, OcrResult, build_ocr_context, effective_concurrency, ocr_page
 from .base import ConversionError, ConversionResult, SectionTracker
 
 IMAGE_MD = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
@@ -21,7 +20,7 @@ NUMBERED_HEADING = re.compile(r"^(\d+(?:\.\d+){0,5})\s+(\S.{0,79})$")
 LOW_TEXT_CHARS = 30
 
 
-def convert_pdf(source: Path, assets_dir: Path) -> ConversionResult:
+def convert_pdf(source: Path, assets_dir: Path, *, ocr_ctx: OcrContext | None = None) -> ConversionResult:
     try:
         import pymupdf4llm
     except ImportError as exc:  # pragma: no cover - 依赖缺失时给出明确提示
@@ -56,7 +55,8 @@ def convert_pdf(source: Path, assets_dir: Path) -> ConversionResult:
     warnings: list[str] = []
     assets: list[dict] = []
     seen_assets: set[str] = set()
-    settings = get_settings()
+    if ocr_ctx is None:
+        ocr_ctx = build_ocr_context()
 
     try:
         import pymupdf
@@ -65,7 +65,7 @@ def convert_pdf(source: Path, assets_dir: Path) -> ConversionResult:
     except Exception:
         document = None
 
-    ocr_map = _prefetch_ocr(pages, settings, document)
+    ocr_map = _prefetch_ocr(pages, ocr_ctx, document)
 
     try:
         for index, page in enumerate(pages, start=1):
@@ -144,7 +144,7 @@ def convert_pdf(source: Path, assets_dir: Path) -> ConversionResult:
     )
 
 
-def _prefetch_ocr(pages: list[dict], settings, document) -> dict[int, dict]:
+def _prefetch_ocr(pages: list[dict], ocr_ctx: OcrContext, document) -> dict[int, dict]:
     low_pages: list[tuple[int, str]] = []
     for index, page in enumerate(pages, start=1):
         page_number = int((page.get("metadata") or {}).get("page") or index)
@@ -155,9 +155,9 @@ def _prefetch_ocr(pages: list[dict], settings, document) -> dict[int, dict]:
         return {}
 
     results: dict[int, dict] = {}
-    if not settings.ocr_enabled:
+    if not ocr_ctx.enabled:
         for page_number, original_text in low_pages:
-            info = {"page": page_number, "reason": "文本层为空或过少", "status": "pending", "error": "OCR 未启用"}
+            info = {"page": page_number, "reason": "文本层为空或过少", "status": "pending", "profile": ocr_ctx.profile_id, "mode": ocr_ctx.mode, "error": "OCR 未启用"}
             results[page_number] = {
                 "text": original_text,
                 "page_info": info,
@@ -165,13 +165,26 @@ def _prefetch_ocr(pages: list[dict], settings, document) -> dict[int, dict]:
             }
         return results
 
-    max_pages = settings.ocr_max_pages
+    if ocr_ctx.provider is None:
+        error = ocr_ctx.error or "OCR 未启用或未配置"
+        for page_number, original_text in low_pages:
+            info = {"page": page_number, "reason": "文本层为空或过少", "status": "failed", "profile": ocr_ctx.profile_id, "mode": ocr_ctx.mode, "error": error}
+            results[page_number] = {
+                "text": original_text,
+                "page_info": info,
+                "warnings": [f"第 {page_number} 页 OCR 失败：{error}，已保留原始图片"],
+            }
+        return results
+
+    max_pages = ocr_ctx.max_pages
     if max_pages > 0 and len(low_pages) > max_pages:
         for page_number, original_text in low_pages[max_pages:]:
             info = {
                 "page": page_number,
                 "reason": "文本层为空或过少",
                 "status": "skipped",
+                "profile": ocr_ctx.profile_id,
+                "mode": ocr_ctx.mode,
                 "error": f"超过单文档 OCR 页数上限 {max_pages}",
             }
             results[page_number] = {
@@ -183,9 +196,9 @@ def _prefetch_ocr(pages: list[dict], settings, document) -> dict[int, dict]:
 
     jobs: list[tuple[int, str, bytes]] = []
     for page_number, original_text in low_pages:
-        image_bytes = _render_page(document, page_number, settings.ocr_dpi)
+        image_bytes = _render_page(document, page_number, ocr_ctx.dpi)
         if not image_bytes:
-            info = {"page": page_number, "reason": "文本层为空或过少", "status": "failed", "error": "页面渲染失败"}
+            info = {"page": page_number, "reason": "文本层为空或过少", "status": "failed", "profile": ocr_ctx.profile_id, "mode": ocr_ctx.mode, "error": "页面渲染失败"}
             results[page_number] = {
                 "text": original_text,
                 "page_info": info,
@@ -197,10 +210,10 @@ def _prefetch_ocr(pages: list[dict], settings, document) -> dict[int, dict]:
     if not jobs:
         return results
 
-    workers = effective_concurrency()
+    workers = effective_concurrency(ocr_ctx)
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(ocr_page, image_bytes, page=page_number): (page_number, original_text)
+            executor.submit(ocr_page, ocr_ctx, image_bytes, page=page_number): (page_number, original_text)
             for page_number, original_text, image_bytes in jobs
         }
         for future in as_completed(futures):
@@ -213,15 +226,17 @@ def _prefetch_ocr(pages: list[dict], settings, document) -> dict[int, dict]:
                     provider="unknown",
                     error=f"OCR 线程异常：{type(exc).__name__}: {exc}",
                 )
-            results[page_number] = _ocr_entry(original_text, page_number, result)
+            results[page_number] = _ocr_entry(original_text, page_number, result, ocr_ctx)
     return results
 
 
-def _ocr_entry(original_text: str, page_number: int, result: OcrResult) -> dict:
+def _ocr_entry(original_text: str, page_number: int, result: OcrResult, ocr_ctx: OcrContext) -> dict:
     info = {
         "page": page_number,
         "reason": "文本层为空或过少",
         "status": "completed" if result.ok else "failed",
+        "profile": ocr_ctx.profile_id,
+        "mode": ocr_ctx.mode,
         "provider": result.provider,
         "model": result.model,
         "chars": len(result.text),

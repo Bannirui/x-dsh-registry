@@ -60,7 +60,7 @@ fi
 
 # ---- 安装harness依赖 ----
 cd "$HARNESS"
-if [ ! -d node_modules ]; then
+if [ ! -d node_modules ] || [ ! -d node_modules/react ] || [ ! -d node_modules/@types/react ]; then
   echo ">>> 1/5 安装harness依赖"
   npm install --no-audit --no-fund
 else
@@ -73,6 +73,10 @@ rm -rf lib
 npm run --silent build
 if [ ! -f lib/index.js ]; then
   echo "构建失败：未生成lib/index.js" >&2
+  exit 1
+fi
+if [ ! -f lib/client.js ]; then
+  echo "构建失败：未生成lib/client.js（Web设置页需要）" >&2
   exit 1
 fi
 

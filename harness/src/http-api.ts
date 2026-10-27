@@ -27,6 +27,12 @@ export interface HttpApiConfig {
   taskPrefix?: string
   /** 同时在跑的主Agent上限 超出排队 <=0或省略表示不限 */
   maxConcurrent?: number
+  /** Python 子智能体基址，用于 OCR / LLM 测试代理 */
+  ocrBaseUrl?: string
+  /** 返回当前 OCR 配置（不含密钥）；用于 OCR 测试代理 */
+  ocr?: () => unknown
+  /** 返回当前语义分块 LLM 配置（不含密钥）；用于 LLM 测试代理 */
+  splitLlm?: () => unknown
 }
 
 const DEFAULT_PREFIX = '只调用requirements_pipeline一次处理这段需求，然后用中文总结结果并结束，不要调用其它工具：'
@@ -189,6 +195,75 @@ export function registerHttpApi(ctx: Context, config: HttpApiConfig = {}): void 
     })
 
     c.effect(() => dispose, 'x-harness: http-api route')
+
+    // OCR 设置页的“测试连接”：同源调用，只转发 profileId/临时配置，不触碰密钥。
+    const disposeOcrTest = webServer.register({
+      kind: 'exact',
+      path: '/x/dsh/ocr/test',
+      handler: async (req, res) => {
+        if (req.method !== 'POST') {
+          writeJson(res, 405, { error: 'method not allowed; use POST' })
+          return
+        }
+        const body = await readJson(req)
+        const override = body.ocr && typeof body.ocr === 'object' ? body.ocr : undefined
+        const ocr = override ?? config.ocr?.()
+        if (ocr === undefined) {
+          writeJson(res, 400, { error: 'OCR 配置不可用' })
+          return
+        }
+        const profileId = typeof body.profileId === 'string' ? body.profileId : ''
+        const base = (config.ocrBaseUrl || 'http://127.0.0.1:8077').replace(/\/+$/, '')
+        try {
+          const response = await fetch(`${base}/ocr/test`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ocr, profileId }),
+          })
+          const text = await response.text()
+          res.writeHead(response.status, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(text)
+        } catch (error) {
+          writeJson(res, 502, { error: `OCR 测试后端不可达：${String(error)}` })
+        }
+      },
+    })
+
+    c.effect(() => disposeOcrTest, 'x-harness: ocr test route')
+
+    // 语义分块 LLM 设置页的“测试连接”：同源调用，只转发临时配置，不触碰密钥。
+    const disposeLlmTest = webServer.register({
+      kind: 'exact',
+      path: '/x/dsh/llm/test',
+      handler: async (req, res) => {
+        if (req.method !== 'POST') {
+          writeJson(res, 405, { error: 'method not allowed; use POST' })
+          return
+        }
+        const body = await readJson(req)
+        const override = body.llm && typeof body.llm === 'object' ? body.llm : undefined
+        const llm = override ?? config.splitLlm?.()
+        if (llm === undefined) {
+          writeJson(res, 400, { error: '语义分块 LLM 配置不可用' })
+          return
+        }
+        const base = (config.ocrBaseUrl || 'http://127.0.0.1:8077').replace(/\/+$/, '')
+        try {
+          const response = await fetch(`${base}/llm/test`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ llm }),
+          })
+          const text = await response.text()
+          res.writeHead(response.status, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(text)
+        } catch (error) {
+          writeJson(res, 502, { error: `语义分块 LLM 测试后端不可达：${String(error)}` })
+        }
+      },
+    })
+
+    c.effect(() => disposeLlmTest, 'x-harness: llm test route')
     const concurrency = config.maxConcurrent && config.maxConcurrent > 0 ? config.maxConcurrent : 'unlimited'
     c.logger.info(
       `x-harness: HTTP API at POST /x/dsh/registry`

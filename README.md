@@ -1,35 +1,37 @@
 REQ-SPLIT
 ---
 
+文档格式转换/拆分/语义重组
+
 ## 1 QUICK START
 
 ### 1.1 编译
 
 ```sh
-./build.sh
+./build.sh --clean
 ```
 
-### 1.2 配置文件
+### 1.2 启动
 
-```sh
-cp .env.example .env
-```
-
-> 填写或修改对应配置项目 尤其`DEEPSEEK_API_KEY`和`X_HARNESS_TOKEN`
-
-### 1.3 启动
+#### 1.2.1 直接启动
 
 ```sh
 ./run.sh
 ```
 
-### 1.4 交互
+#### 1.2.2 插件启动
 
-默认会自动拉起本地服务或者手动访问本地浏览器
+![](./doc/img/install_plugin.PNG)
 
-```sh
-http://127.0.0.1:8080/
-```
+重启`npx @deepseek-ai/dsh web`或desktop app
+
+### 1.3 配置OCR
+
+![](./doc/img/ocr_setting.PNG)
+
+### 1.5 配置语义分块LLM
+
+![](./doc/img/split_llm.PNG)
 
 ## 2 SAMPLES
 
@@ -39,9 +41,12 @@ http://127.0.0.1:8080/
 
 ### 2.2 web会话输入
 
-- 显式指定输出路径 `调用split_requirement_document工具转换02-跨章节合并.docx outputDir设为output`
+> 以下方式都行
 
-- 使用默认输出路径 `调用split_requirement_document工具转换02-跨章节合并.docx`
+- 02-跨章节合并.docx
+- 转换02-跨章节合并.docx
+- 转换02-跨章节合并.docx outputDir设为outputs
+- 调用split_requirement_document工具转换02-跨章节合并.docx outputDir设为outputs
 
 ![](./doc/img/1792994052.png)
 

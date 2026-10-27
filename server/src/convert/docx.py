@@ -11,7 +11,7 @@ from .base import ConversionError, ConversionResult, SectionTracker
 VML_IMAGEDATA = "{urn:schemas-microsoft-com:vml}imagedata"
 
 
-def convert_docx(source: Path, assets_dir: Path) -> ConversionResult:
+def convert_docx(source: Path, assets_dir: Path, *, ocr_ctx=None) -> ConversionResult:
     try:
         from docx import Document
         from docx.table import Table

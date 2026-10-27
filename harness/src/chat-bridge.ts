@@ -18,12 +18,21 @@ function lastUserText(messages: readonly RequestMessage[]): string {
 }
 
 /** 调用 Python 子智能体并取出要展示的文本 */
-async function callAgent(baseUrl: string, agentName: string, text: string): Promise<string> {
+async function callAgent(
+  baseUrl: string,
+  agentName: string,
+  text: string,
+  ocr: unknown,
+  llm: unknown,
+): Promise<string> {
   const endpoint = `${baseUrl.replace(/\/+$/, '')}/agents/${encodeURIComponent(agentName)}`
+  const input: Record<string, unknown> = { text }
+  if (ocr !== undefined) input.ocr = ocr
+  if (llm !== undefined) input.llm = llm
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ input: { text } }),
+    body: JSON.stringify({ input }),
   })
   if (!response.ok) {
     throw new Error(`Python 子智能体 "${agentName}" HTTP ${response.status}`)
@@ -68,9 +77,13 @@ async function* bridgeStream(
   baseUrl: string,
   agentName: string,
   text: string,
+  ocr: () => unknown,
+  llm: () => unknown,
+  ready: () => Promise<void>,
 ): AsyncIterable<StreamChunk> {
   try {
-    const reply = await callAgent(baseUrl, agentName, text)
+    await ready()
+    const reply = await callAgent(baseUrl, agentName, text, ocr(), llm())
     yield* textStream(reply)
   } catch (error) {
     yield errorChunk(error)
@@ -83,10 +96,17 @@ async function* bridgeStream(
  * @param baseUrl Python 服务基址
  * @param agentName 要转发的 Python 子智能体名
  */
-export function installChatBridge(ctx: Context, baseUrl: string, agentName: string): void {
+export function installChatBridge(
+  ctx: Context,
+  baseUrl: string,
+  agentName: string,
+  ocr: () => unknown = () => undefined,
+  llm: () => unknown = () => undefined,
+  ready: () => Promise<void> = async () => {},
+): void {
   ctx.on('llm/stream', (options, next) => {
     // 会话标题、压缩等辅助调用仍走真实模型
     if (options.purpose !== undefined) return next()
-    return bridgeStream(baseUrl, agentName, lastUserText(options.messages))
+    return bridgeStream(baseUrl, agentName, lastUserText(options.messages), ocr, llm, ready)
   })
 }

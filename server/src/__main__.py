@@ -6,10 +6,11 @@ import logging
 
 import uvicorn
 
-from .config import get_settings
+from .config import get_settings, normalize_proxy_env
 
 
 def main() -> None:
+    normalize_proxy_env()
     settings = get_settings()
     logging.basicConfig(
         level=settings.log_level.upper(),

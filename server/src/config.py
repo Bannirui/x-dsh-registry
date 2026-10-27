@@ -1,6 +1,6 @@
 """集中配置
 
-所有配置均来自环境变量 进程启动时解析一次并缓存 生产环境通过环境变量/密钥管理注入 不读取任何配置文件
+静态配置来自环境变量，进程启动时解析一次并缓存；模型/OCR 凭据从 harness 凭据库读取。
 """
 
 from __future__ import annotations
@@ -42,6 +42,83 @@ def _get_float(name: str, default: float) -> float:
         raise ConfigError(f"{name} 必须是数字，当前为 {raw!r}") from exc
 
 
+# Models 页面写入凭据库时使用的引用名（不是环境变量）。
+_CREDENTIAL_REFS = ("DEEPSEEK_API_KEY", "DEEPSEEK_OFFICIAL_API_KEY")
+_credential_cache: tuple[str, int, int, dict[str, str]] | None = None
+
+
+def normalize_proxy_env() -> None:
+    """去掉 NO_PROXY 中 IPv6 地址的方括号。
+
+    httpx 会把 ``NO_PROXY`` 里的 ``[::1]`` 误判为域名并生成非法挂载键
+    ``all://*[::1]``，创建客户端时抛 ``InvalidURL: Invalid port``。
+    这里统一改写成 ``::1``，幂等且可重复调用。
+    """
+    for name in ("NO_PROXY", "no_proxy"):
+        raw = os.environ.get(name)
+        if not raw:
+            continue
+        hosts: list[str] = []
+        for host in raw.split(","):
+            item = host.strip()
+            if not item:
+                continue
+            if item.startswith("[") and item.endswith("]"):
+                item = item[1:-1]
+            if item not in hosts:
+                hosts.append(item)
+        os.environ[name] = ",".join(hosts)
+
+
+def _dsh_home() -> Path:
+    raw = os.environ.get("DSH_HOME", "").strip()
+    return Path(raw).expanduser() if raw else Path.home() / ".dsh"
+
+
+def _credential_refs() -> dict[str, str]:
+    """读取 harness 凭据库的 refs 段（Models / OCR 设置页写入）。"""
+    global _credential_cache
+    path = _dsh_home() / ".credentials.yaml"
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    location = str(path)
+    stamp = (location, stat.st_mtime_ns, stat.st_size)
+    if _credential_cache is not None and _credential_cache[:3] == stamp:
+        return _credential_cache[3]
+    try:
+        import yaml
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001 - 凭据文件不可读时视为未配置
+        return {}
+    raw_refs = document.get("refs") if isinstance(document, dict) else None
+    refs: dict[str, str] = {}
+    if isinstance(raw_refs, dict):
+        for name, value in raw_refs.items():
+            if isinstance(name, str) and isinstance(value, str) and value.strip():
+                refs[name] = value.strip()
+    _credential_cache = (*stamp, refs)
+    return refs
+
+
+def resolve_credential(ref: str) -> str:
+    """解析一个凭据引用，只从 harness 凭据库读取。"""
+    name = (ref or "").strip()
+    if not name:
+        return ""
+    return _credential_refs().get(name, "")
+
+
+def resolve_api_key() -> str:
+    """只使用 harness Web Models 页面保存的 key。"""
+    for ref in _CREDENTIAL_REFS:
+        value = resolve_credential(ref)
+        if value:
+            return value
+    return ""
+
+
 @dataclass(frozen=True)
 class Settings:
     api_key: str
@@ -62,7 +139,6 @@ class Settings:
     ocr_base_url: str
     ocr_api_key: str
     ocr_model: str
-    ocr_language: str
     ocr_dpi: int
     ocr_timeout: float
     ocr_max_retries: int
@@ -77,7 +153,7 @@ class Settings:
 def get_settings() -> Settings:
     """解析并缓存配置 允许api_key为空 由启动期校验强制要求。"""
     return Settings(
-        api_key=os.environ.get("DEEPSEEK_API_KEY", "").strip(),
+        api_key=resolve_api_key(),
         base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),
         model=os.environ.get("XAGENTS_MODEL", "deepseek-chat"),
         host=os.environ.get("XAGENTS_HOST", "127.0.0.1"),
@@ -98,7 +174,6 @@ def get_settings() -> Settings:
         ocr_base_url=os.environ.get("XAGENTS_OCR_BASE_URL", "").strip().rstrip("/"),
         ocr_api_key=os.environ.get("XAGENTS_OCR_API_KEY", "").strip(),
         ocr_model=os.environ.get("XAGENTS_OCR_MODEL", "").strip(),
-        ocr_language=os.environ.get("XAGENTS_OCR_LANGUAGE", "chi_sim").strip(),
         ocr_dpi=_get_int("XAGENTS_OCR_DPI", 180),
         ocr_timeout=_get_float("XAGENTS_OCR_TIMEOUT", 60.0),
         ocr_max_retries=_get_int("XAGENTS_OCR_MAX_RETRIES", 1),
@@ -111,8 +186,12 @@ def get_settings() -> Settings:
 
 
 def require_api_key(settings: Settings | None = None) -> str:
-    """返回模型凭据 缺失时抛错"""
-    settings = settings or get_settings()
-    if not settings.api_key:
-        raise ConfigError("DEEPSEEK_API_KEY 未设置：必须提供模型凭据")
-    return settings.api_key
+    """返回模型凭据 缺失时抛错（每次调用都会重新解析，支持 Web 端热更新）"""
+    key = resolve_api_key()
+    if not key and settings is not None:
+        key = settings.api_key
+    if not key:
+        raise ConfigError(
+            "模型凭据未配置：请在 harness Web 的 Models 页面填写 API Key"
+        )
+    return key

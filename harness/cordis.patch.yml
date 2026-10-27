@@ -9,3 +9,12 @@
           - name: requirements_split
         pipeline:
           - requirements_split
+        # Python 子智能体服务跟随插件启动/停止；已有服务(如 ./run.sh 拉起的)会自动复用。
+        pythonService:
+          autoStart: true
+          startupTimeout: 60
+          # 插件与 server/ 不在同一仓库时，填绝对路径：
+          # dir: /absolute/path/to/server
+          # 需要自定义解释器/日志时：
+          # executable: /absolute/path/to/python
+          # logFile: /absolute/path/to/x-agents.log

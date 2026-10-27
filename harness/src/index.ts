@@ -1,4 +1,6 @@
-import type { Context } from '@deepseek-ai/cordis'
+import { join } from 'node:path'
+import type { } from '@deepseek-ai/dsh-system-prompt'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -7,6 +9,9 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import { createHttpProvider } from './http-provider.js'
 import { registerHttpApi } from './http-api.js'
 import { installChatBridge } from './chat-bridge.js'
+import { OcrConfigSchema, ocrInput, type OcrConfig } from './ocr-config.js'
+import { SplitLlmConfigSchema, runtimeSplitLlm, type SplitLlmConfig, type SplitLlmPayload } from './split-llm-config.js'
+import { PythonService, type PythonServiceConfig } from './python-service.js'
 
 export const name = 'x-requirements'
 export const inject = ['tools', 'subagents', 'llm']
@@ -32,6 +37,12 @@ export interface Config {
   maxConcurrent?: number
   /** Web聊天桥：把聊天输入转发给该Python子智能体，输出原样作为回复 */
   chatAgent?: string
+  /** OCR 配置：本地/云端 profile，由 Web 设置页写入（不写死在仓库配置里） */
+  ocr?: Volatile<OcrConfig>
+  /** 语义分块 LLM 配置：由 Web 设置页写入（不写死在仓库配置里） */
+  splitLlm?: Volatile<SplitLlmConfig>
+  /** Python 子智能体服务：插件加载时自动拉起，卸载时收回 */
+  pythonService?: PythonServiceConfig
 }
 
 export const Config = z.object({
@@ -42,6 +53,15 @@ export const Config = z.object({
   taskPrefix: z.string(),
   maxConcurrent: z.natural().default(4),
   chatAgent: z.string(),
+  ocr: OcrConfigSchema,
+  splitLlm: SplitLlmConfigSchema,
+  pythonService: z.object({
+    autoStart: z.boolean().default(true),
+    dir: z.string(),
+    executable: z.string(),
+    startupTimeout: z.natural().default(60),
+    logFile: z.string(),
+  }),
 })
 
 const DEFAULT_AGENTS: AgentEndpoint[] = [
@@ -63,6 +83,33 @@ function stringField(value: Record<string, JsonValue>, key: string): string {
 function numberField(value: Record<string, JsonValue>, key: string): number {
   const field = value[key]
   return typeof field === 'number' ? field : 0
+}
+
+/** 把当前 OCR 配置附加到对象型输入上；显式传入的 ocr 优先。 */
+function withOcr(input: JsonValue, ocr: OcrConfig | undefined): JsonValue {
+  if (ocr === undefined) return input
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return input
+  const record = input as Record<string, JsonValue>
+  if (record.ocr !== undefined) return input
+  return { ...record, ocr: ocr as unknown as JsonValue }
+}
+
+/** 把当前语义分块 LLM 配置附加到对象型输入上；显式传入的 llm 优先。 */
+function withSplitLlm(input: JsonValue, llm: SplitLlmPayload | undefined): JsonValue {
+  if (llm === undefined) return input
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return input
+  const record = input as Record<string, JsonValue>
+  if (record.llm !== undefined) return input
+  return { ...record, llm: llm as unknown as JsonValue }
+}
+
+/** 附加 Web 设置页维护的运行时配置（OCR + 语义分块 LLM）。 */
+function withRuntimeSettings(
+  input: JsonValue,
+  config: Config,
+  splitLlm: SplitLlmPayload | undefined,
+): JsonValue {
+  return withSplitLlm(withOcr(input, ocrInput(config)), splitLlm)
 }
 
 class TaskApiUnavailable extends Error {}
@@ -154,9 +201,40 @@ export function apply(ctx: Context, config: Config): void {
   const pipeline: string[] =
     config.pipeline && config.pipeline.length ? config.pipeline : DEFAULT_PIPELINE
 
+  // Python 子智能体服务跟随插件生命周期：加载时补启动，卸载时收回自己拉起的进程。
+  const pythonService = new PythonService({
+    baseUrl: defaultBaseUrl,
+    config: config.pythonService,
+    logger: ctx.logger,
+  })
+  ctx.effect(() => {
+    void pythonService.ensure().catch((error) => {
+      ctx.logger.warn(`Python 服务自动启动失败：${String(error)}`)
+    })
+    return () => {
+      void pythonService.dispose()
+    }
+  }, 'x-requirements: python service')
+
   for (const agent of agents) {
     ctx.subagents.registerProvider(createHttpProvider(agent.baseUrl?.trim() || defaultBaseUrl, agent.name))
   }
+
+  // 让主 Agent 默认把需求文档/正文交给拆分工具，无需用户显式点名工具。
+  ctx.inject(['systemPrompt'], (c) => {
+    c.effect(() => c.systemPrompt.section({
+      name: 'x-requirements:default-routing',
+      order: 450,
+      interpolate: false,
+      text:
+        '当用户提供需求文档（PDF/Word/Excel 路径）或粘贴需求正文，'
+        + '或明确要求做需求拆分时，直接调用相应工具，'
+        + '不要要求用户显式说明工具名，也不要先反问是否执行：\n'
+        + '- 有文档路径：调用 split_requirement_document，path 使用确认存在的绝对路径；\n'
+        + '- 只有需求正文：调用 requirements_pipeline，material 使用原文。\n'
+        + '其他与需求拆分无关的任务仍按正常方式处理，保留主 Agent 的通用能力。',
+    }), 'x-requirements: default routing prompt')
+  })
 
   /** 调一个子智能体 返回其JSON 输出 */
   const callAgent = async (
@@ -168,6 +246,7 @@ export function apply(ctx: Context, config: Config): void {
     if (!ctx.subagents.getProvider(agentName)) {
       throw new Error(`未注册的子智能体: ${agentName}`)
     }
+    await pythonService.ensure()
     const run: SubagentRun = await ctx.subagents.start(agentName, {
       label: `x:${agentName}`,
       prompt: [{ type: 'text', text: JSON.stringify(input) }],
@@ -224,10 +303,10 @@ export function apply(ctx: Context, config: Config): void {
         const parent = exec.agent
         if (!parent) throw new Error('requirements_pipeline 需要调用方Agent（exec.agent为空）')
 
-        let current: JsonValue = { raw: args.material }
+        let current: JsonValue = withRuntimeSettings({ raw: args.material }, config, runtimeSplitLlm(config, ctx))
         const stages: Array<{ agent: string; output: JsonValue }> = []
         for (const agentName of pipeline) {
-          current = await callAgent(agentName, current, parent, exec.signal)
+          current = await callAgent(agentName, withRuntimeSettings(current, config, runtimeSplitLlm(config, ctx)), parent, exec.signal)
           stages.push({ agent: agentName, output: current })
         }
 
@@ -271,7 +350,7 @@ export function apply(ctx: Context, config: Config): void {
       async execute(args, exec) {
         const parent = exec.agent
         if (!parent) throw new Error('x_call_agent需要调用方Agent（exec.agent为空）')
-        const output = await callAgent(args.agent, args.input, parent, exec.signal)
+        const output = await callAgent(args.agent, withRuntimeSettings(args.input, config, runtimeSplitLlm(config, ctx)), parent, exec.signal)
         return { kind: 'x-call-agent' as const, agent: args.agent, output }
       },
     }),
@@ -345,10 +424,22 @@ export function apply(ctx: Context, config: Config): void {
           throw new Error('未注册的子智能体: requirements_split，请检查插件 agents 配置')
         }
         const baseUrl = agents.find((item) => item.name === 'requirements_split')?.baseUrl?.trim() || defaultBaseUrl
-        const input = { path: args.path, output_dir: args.outputDir, title: args.title }
+        const explicitOutput = typeof args.outputDir === 'string' ? args.outputDir.trim() : ''
+        const workspace = parent.session.header.cwd
+        const outputDir = explicitOutput || (workspace ? join(workspace, 'outputs') : undefined)
+        const ocr = ocrInput(config)
+        const splitLlm = runtimeSplitLlm(config, ctx)
+        const input = {
+          path: args.path,
+          output_dir: outputDir,
+          title: args.title,
+          ...(ocr ? { ocr } : {}),
+          ...(splitLlm ? { llm: splitLlm } : {}),
+        }
         let jobId = ''
         let output: JsonValue
         try {
+          await pythonService.ensure()
           jobId = await submitTask(baseUrl, 'requirements_split', input, exec.signal)
           let lastLogged = -1
           let lastStage = ''
@@ -409,7 +500,14 @@ export function apply(ctx: Context, config: Config): void {
 
   const chatAgent = config.chatAgent?.trim()
   if (chatAgent) {
-    installChatBridge(ctx, defaultBaseUrl, chatAgent)
+    installChatBridge(
+      ctx,
+      defaultBaseUrl,
+      chatAgent,
+      () => ocrInput(config),
+      () => runtimeSplitLlm(config, ctx),
+      () => pythonService.ensure(),
+    )
     ctx.logger.info(`${name}: Web聊天输入转发到 Python 子智能体 ${chatAgent}`)
   }
 
@@ -418,5 +516,8 @@ export function apply(ctx: Context, config: Config): void {
     token: config.token,
     taskPrefix: config.taskPrefix,
     maxConcurrent: config.maxConcurrent,
+    ocrBaseUrl: defaultBaseUrl,
+    ocr: () => ocrInput(config),
+    splitLlm: () => runtimeSplitLlm(config, ctx),
   })
 }

@@ -11,7 +11,7 @@ MAX_ROWS = 20000
 MAX_COLUMNS = 200
 
 
-def convert_xlsx(source: Path, assets_dir: Path) -> ConversionResult:
+def convert_xlsx(source: Path, assets_dir: Path, *, ocr_ctx=None) -> ConversionResult:
     try:
         from openpyxl import load_workbook
     except ImportError as exc:

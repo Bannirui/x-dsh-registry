@@ -5,12 +5,15 @@
   GET  /ready           就绪探针（校验模型凭据，失败返回 503）
   GET  /agents          列出所有子智能体
   POST /agents/{name}   运行一个子智能体，体 {"input": {...}}
+  POST /ocr/test        用样例图验证 OCR profile
+  POST /llm/test        验证语义分块 LLM 的端点/模型/密钥
 
 所有错误都以harness契约形式返回：``{"output": null, "stopReason": "error", "diagnostic": "..."}`` 不向调用方抛裸异常/堆栈
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -21,9 +24,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import llm
-from .config import ConfigError, get_settings, require_api_key
+from .config import ConfigError, get_settings, normalize_proxy_env, require_api_key
+from .ocr import test_ocr
 from .registry import REGISTRY, run_agent
 from .tasks import TaskManager
+
+normalize_proxy_env()
 
 logger = logging.getLogger("xagents")
 
@@ -57,6 +63,15 @@ class TaskSubmitResponse(BaseModel):
     status: str
 
 
+class OcrTestBody(BaseModel):
+    ocr: dict[str, Any] = Field(default_factory=dict)
+    profileId: str = ""
+
+
+class LlmTestBody(BaseModel):
+    llm: dict[str, Any] = Field(default_factory=dict)
+
+
 class TaskResponse(BaseModel):
     taskId: str
     agent: str
@@ -73,8 +88,11 @@ class TaskResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    # 启动即校验凭据
-    require_api_key(settings)
+    # 凭据可在 harness Web 的 Models 页面配置，启动时不强制要求
+    try:
+        require_api_key(settings)
+    except ConfigError as exc:
+        logger.warning("%s（配置后自动生效，无需重启）", exc)
     logger.info(
         "xagents启动：model=%s base_url=%s workers=%s agents=%s",
         settings.model,
@@ -129,6 +147,24 @@ def _error(status: int, diagnostic: str) -> JSONResponse:
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse(ok=True)
+
+
+@app.post("/ocr/test")
+async def ocr_test(body: OcrTestBody) -> Any:
+    try:
+        return await asyncio.to_thread(test_ocr, body.ocr, body.profileId)
+    except Exception as exc:  # noqa: BLE001 - 测试接口返回可读诊断
+        logger.exception("OCR 测试失败")
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@app.post("/llm/test")
+async def llm_test(body: LlmTestBody) -> Any:
+    try:
+        return await llm.test_llm(body.llm)
+    except Exception as exc:  # noqa: BLE001 - 测试接口返回可读诊断
+        logger.exception("语义分块 LLM 测试失败")
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
 @app.get("/ready", response_model=HealthResponse, responses={503: {"model": RunResponse}})

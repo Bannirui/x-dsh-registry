@@ -10,10 +10,13 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 SUPPORTED_SUFFIXES = {".pdf", ".docx", ".xlsx", ".xlsm"}
 TEXT_KEYS = ("text", "content", "material", "raw")
+
+if TYPE_CHECKING:
+    from ..ocr.base import OcrContext
 
 
 class ConversionError(RuntimeError):
@@ -167,7 +170,7 @@ def _build_manifest(
     }
 
 
-def convert_file(source: Path, task_dir: Path) -> dict:
+def convert_file(source: Path, task_dir: Path, *, ocr_ctx: "OcrContext | None" = None) -> dict:
     """转换单个文件并返回 manifest。"""
     suffix = source.suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
@@ -178,7 +181,7 @@ def convert_file(source: Path, task_dir: Path) -> dict:
     assets_dir = task_dir / "assets" / source_format_name(suffix)
     assets_dir.mkdir(parents=True, exist_ok=True)
     try:
-        result = converter(source, assets_dir)
+        result = converter(source, assets_dir, ocr_ctx=ocr_ctx)
     except ConversionError:
         raise
     except Exception as exc:  # noqa: BLE001 - 统一转成可读诊断
@@ -194,6 +197,14 @@ def convert_file(source: Path, task_dir: Path) -> dict:
     )
     manifest["markdown"]["path"] = markdown_path.name
     manifest["manifest_path"] = "convert_manifest.json"
+    if ocr_ctx is not None:
+        manifest["ocr"] = {
+            "enabled": ocr_ctx.enabled,
+            "profile": ocr_ctx.profile_id,
+            "mode": ocr_ctx.mode,
+            "provider": ocr_ctx.provider.name if ocr_ctx.provider is not None else "none",
+            "error": ocr_ctx.error or None,
+        }
     _write_manifest(task_dir, manifest)
     return manifest
 
@@ -230,7 +241,7 @@ def source_format_name(suffix: str) -> str:
     return {".pdf": "pdf", ".docx": "docx", ".xlsx": "xlsx", ".xlsm": "xlsx"}[suffix]
 
 
-def _converter_for(suffix: str) -> Callable[[Path, Path], ConversionResult]:
+def _converter_for(suffix: str) -> Callable[..., ConversionResult]:
     if suffix == ".pdf":
         from .pdf import convert_pdf
 
